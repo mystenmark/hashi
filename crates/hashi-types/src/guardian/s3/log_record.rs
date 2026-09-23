@@ -399,8 +399,8 @@ mod tests {
     use crate::guardian::CeremonyLogMessage;
     use crate::guardian::CeremonyProposalLogMessage;
     use crate::guardian::CeremonyStage;
-    use crate::guardian::EnclaveLifecycle;
     use crate::guardian::CommitteeUpdateLogMessage;
+    use crate::guardian::EnclaveLifecycle;
     use crate::guardian::GenesisLogMessage;
     use crate::guardian::GuardianError;
     use crate::guardian::GuardianInfo;
