@@ -398,6 +398,8 @@ mod tests {
     use super::*;
     use crate::guardian::CeremonyLogMessage;
     use crate::guardian::CeremonyProposalLogMessage;
+    use crate::guardian::CeremonyStage;
+    use crate::guardian::EnclaveLifecycle;
     use crate::guardian::CommitteeUpdateLogMessage;
     use crate::guardian::GenesisLogMessage;
     use crate::guardian::GuardianError;
@@ -488,8 +490,19 @@ mod tests {
         let response = StandardWithdrawalResponse::mock_for_testing();
         let encrypted_shares = RotateKpSetResponse::mock_for_testing().encrypted_shares;
         let guardian_info = GuardianInfo::mock_for_testing();
-        let mut ceremony_info = guardian_info.clone();
-        ceremony_info.lifecycle = crate::guardian::CeremonyStage::Uninitialized.into();
+        let ceremony_info = GuardianInfo {
+            lifecycle: CeremonyStage::OperatorInitialized.into(),
+            secret_sharing_instance: None,
+            config_hash: None,
+            genesis_state_hash: None,
+            enclave_btc_pubkey: None,
+            limiter_state: None,
+            limiter_config: None,
+            current_committee_epoch: None,
+            mpc_master_g: None,
+            hashi_object_id: None,
+            ..guardian_info.clone()
+        };
         let committee_0: crate::move_types::Committee = (&committee_0).into();
         let mut committee_1 = committee_0.clone();
         committee_1.epoch = 1;
@@ -595,10 +608,9 @@ mod tests {
             LogMessage::Init(message) => match message.as_ref() {
                 InitLogMessage::OIAttestationUnsigned { .. } => "init/oi-attestation-unsigned",
                 InitLogMessage::OIGuardianInfo(info) => match info.lifecycle {
-                    crate::guardian::EnclaveLifecycle::Ceremony(_) => {
-                        "init/oi-ceremony-guardian-info"
-                    }
-                    crate::guardian::EnclaveLifecycle::Withdraw(_) => "init/oi-guardian-info",
+                    Some(EnclaveLifecycle::Ceremony(_)) => "init/oi-ceremony-guardian-info",
+                    Some(EnclaveLifecycle::Withdraw(_)) => "init/oi-guardian-info",
+                    None => panic!("OI fixtures must describe an initialized session"),
                 },
                 InitLogMessage::PIEnclaveFullyInitialized { .. } => {
                     "init/pi-enclave-fully-initialized"

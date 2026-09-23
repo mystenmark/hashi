@@ -140,7 +140,13 @@ impl VerifiedSessionInfo {
         record: LogRecord,
     ) -> GuardianResult<VerifiedLogRecord> {
         let entry = record.validate_into_entry(Some(&self.signing_pubkey))?;
-        let required = InitCheckpoint::required_for(entry.log_type(), self.info.lifecycle.mode())?;
+        let required = InitCheckpoint::required_for(
+            entry.log_type(),
+            self.info
+                .lifecycle
+                .ok_or_else(|| InvalidS3Log("OI record is uninitialized".into()))?
+                .mode(),
+        )?;
         self.ensure_init_checkpoint(s3, entry.session_id(), required)
             .await?;
         Ok(VerifiedLogRecord {

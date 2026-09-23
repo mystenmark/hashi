@@ -17,6 +17,7 @@ use tracing::info;
 
 use crate::config::Config;
 use crate::guardian_info::ensure_oi_info_matches_post_init;
+use crate::guardian_info::verified_initialization_target_info;
 use crate::guardian_info::verified_live_guardian_info;
 
 /// Initialize a fresh withdraw-mode guardian with operator-supplied stable config.
@@ -121,7 +122,8 @@ pub async fn run(cfg: Config, do_genesis: bool) -> anyhow::Result<()> {
         phase = "guardian preflight",
         "fetching + verifying uninitialized GuardianInfo"
     );
-    let preflight = verified_live_guardian_info(&mut client, allowlist.current_build()).await?;
+    let preflight =
+        verified_initialization_target_info(&mut client, allowlist.current_build()).await?;
     ensure_uninitialized(&preflight.info)?;
     let session_id = preflight.session_id.clone();
     let signing_pub_key = preflight.signing_pub_key;
@@ -274,10 +276,7 @@ pub async fn run(cfg: Config, do_genesis: bool) -> anyhow::Result<()> {
 }
 
 fn ensure_uninitialized(info: &GuardianInfo) -> anyhow::Result<()> {
-    ensure!(
-        info.lifecycle == WithdrawStage::Uninitialized.into(),
-        "guardian is not an uninitialized withdraw enclave"
-    );
+    ensure!(info.lifecycle.is_none(), "guardian is not uninitialized");
     ensure!(
         info.secret_sharing_instance.is_none(),
         "guardian already has a secret-sharing instance"
