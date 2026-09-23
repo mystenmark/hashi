@@ -794,7 +794,7 @@ impl SigningManager {
                     );
                 }
             }
-            _ => {}
+            Blame::Inconclusive(_) | Blame::Nobody => {}
         }
         let before = flagged.len();
         flagged.extend(
