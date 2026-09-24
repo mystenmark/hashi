@@ -318,7 +318,9 @@ mod tests {
             &enclave.info_for_lifecycle(enclave.lifecycle())
         );
         assert_eq!(
-            info.deployment_info.as_ref().map(|d| d.git_revision.as_str()),
+            info.deployment_info
+                .as_ref()
+                .map(|d| d.git_revision.as_str()),
             Some("unknown")
         );
     }
