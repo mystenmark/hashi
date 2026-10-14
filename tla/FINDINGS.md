@@ -146,18 +146,85 @@ checked), **review-confirmed** (reviewers traced it in code; no model yet),
   epoch-tag check is necessary: `PresigNoTagCheck.cfg` fails.
 - **Not yet modelled:** explicit batches and seals, digest mismatch.
 
-### F6. A withdrawal whose input is spent elsewhere is stuck forever, with hBTC burned
+### F6. A pool record whose Bitcoin output is already spent strands every withdrawal that uses it
 
-- **Status:** model-confirmed (review finding R5, with R6 as one cause).
+- **Status:** model-confirmed (review finding R5, with R6 as one cause);
+  the two code facts below were checked directly. Severity: loss of user
+  funds until manual intervention; requires an out-of-band spend.
 - **Model:** `Bridge.tla` via `MC_Bridge.tla`, config
   `BridgeLiveRecovery.cfg` (property `WithdrawalCompletes` fails). Control:
   `BridgeLive.cfg` passes.
-- **Trace:** a recovery-leaf spend takes a Hashi output on Bitcoin. Its pool
-  record stays Available. A withdrawal commits it as an input, burns the
-  user's hBTC, and becomes fully signed. Its Bitcoin transaction can never be
-  broadcast, and nothing on chain can cancel or replace the withdrawal.
-- **Other causes with the same effect:** any conflicting spend of a pool
-  output, or a deposit reorged deeper than the confirmation threshold.
+
+**Objects involved.**
+
+- `O`: a Bitcoin output that Hashi controls, for example a confirmed
+  deposit.
+- `U`: the pool record for `O`, a `UtxoRecord` in `UtxoPool.utxo_records`.
+  The pool is the onchain list of outputs Hashi believes it can spend.
+- `R`: a user's `WithdrawalRequest`. It escrows the user's hBTC.
+- `W`: a `WithdrawalTransaction`, the onchain object that
+  `commit_withdrawal_tx` creates. It describes one Bitcoin transaction that
+  pays one or more requests, with its inputs, outputs, change, and
+  signatures.
+- `T_W`: the Bitcoin transaction that `W` describes.
+
+**Precondition.** `O` is spent on Bitcoin by a transaction Hashi did not
+create through `W`, while `U` stays Available in the pool. Ways this can
+happen:
+
+- the 60-day recovery leaf: holders of the MPC key spend `O` without the
+  Guardian (F7);
+- a deposit transaction reorged deeper than the confirmation threshold;
+- any other spend of `O` outside the withdrawal flow.
+
+Nothing on chain or in the node removes or invalidates `U` when `O` is
+spent elsewhere.
+
+**Sequence.**
+
+1. The leader selects `U` as an input and builds `W` for request `R`.
+   Committee members check `U` only against `utxo_records`; they do not ask
+   Bitcoin whether `O` exists (`withdrawals.rs:638-676`).
+2. `commit_withdrawal_tx` succeeds. `U` becomes Locked by `W`. `R` becomes
+   Committed. The user's escrowed hBTC is burned. `W`'s change output is
+   inserted into the pool as a new Available-pending record `C`.
+3. The committee signs every input of `T_W` with MPC, and the Guardian
+   co-signs. Neither checks Bitcoin.
+4. Committee members sign the finalize certificate. Their
+   `testmempoolaccept` check rejects `T_W` with `missing-inputs`, which the
+   code classifies as `RejectedOther`, not a script failure, so they sign
+   anyway (`finalize_bitcoin_check.rs:63-75, 99-108`).
+   `finalize_withdrawal` marks `W` fully signed.
+5. The leader broadcasts `T_W`. Bitcoin rejects it because `O` is spent.
+   The leader sees "not found" and rebroadcasts on every tick, forever.
+6. `confirm_withdrawal` never runs, because committee members require `T_W`
+   to be confirmed on Bitcoin.
+
+**End state.**
+
+- `R` is Committed. `cancel_withdrawal` refuses committed requests, so the
+  user cannot get the hBTC back, and the BTC never arrives.
+- `W` stays fully signed and unconfirmed. No entry function cancels or
+  replaces it.
+- `U` stays Locked forever.
+- `C` sits in the pool as Available-pending but does not exist on Bitcoin.
+  If a later withdrawal `W2` selects `C` as an input, `W2` and its requests
+  are stranded the same way.
+- Every other input of `W` is Locked too, so their BTC is unusable until
+  someone intervenes, even though those outputs still exist on Bitcoin.
+
+**Model trace (`BridgeLiveRecovery.cfg`).** A deposit output is mined; a
+recovery transaction spends it; the deposit is requested, approved, and
+confirmed, so its pool record is Available; a user requests a withdrawal
+and it is approved; `CommitWithdrawal` takes the record as input; MPC and
+Guardian sign; `FinalizeWithdrawal` succeeds; then nothing can happen to
+`W`.
+
+**Fix directions.** Check that each confirmed input exists and is unspent on
+Bitcoin before signing the commit certificate. Add a path that, on a
+certificate showing an input is spent on Bitcoin, unwinds `W`: unlock the
+other inputs, remove `C`, and re-mint or refund `R`'s hBTC. Treat
+`missing-inputs` at finalize as a reason to refuse.
 
 ### F7. Recovery spends break pool soundness and backing
 
