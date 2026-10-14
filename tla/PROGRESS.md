@@ -63,6 +63,16 @@
   - `BridgeLive.cfg` (no faults, leader guard): liveness passes.
     `BridgeLiveRecovery.cfg`: WithdrawalCompletes fails (F6).
   - `BridgePausedBroadcast.cfg`: fails (F8).
+- `Reconfig` (chain reconfig after genesis, node driver, Guardian committee
+  chain):
+  - `Reconfig.cfg`: all safety properties pass, 4.2M states.
+  - `ReconfigNoGate.cfg`: Guardian adopts an aborted committee (F10).
+  - `ReconfigLive.cfg`: HashiCatchesUp passes (no transient failures, no
+    holds). With holds, governance toggling forever defeats liveness; that
+    environment is unrealistic, so the config disables holds.
+  - `ReconfigLiveTransient.cfg`: fails at the last Sui epoch (R9, F11).
+  - `ReconfigGuardianLive.cfg`: GuardianCatchesUp fails (F9).
+  - Not modelled: genesis, committee membership changes, governance votes.
 - Validation: F1 reproduced in a Rust test on branch
   `mlogan-f1-dkg-complaint-test` (see FINDINGS.md F1).
 
@@ -74,5 +84,4 @@
 - Guardian: model sessions, heartbeat fence, S3 durability, and activation
   (safety 19); committee chain and proxy handoff gate (safety 16); liveness
   "consumed implies finalized".
-- Write and check `Reconfig`.
 - After the full system model: revisit `tla/FINDINGS.md` with code owners.
