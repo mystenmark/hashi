@@ -9,6 +9,10 @@ MCDepReqIds == {<<d1, 2, TRUE>>, <<d2, 1, FALSE>>, <<d1, 1, TRUE>>}
 MCReqs == {q1, q2}
 MCReqAmt == (q1 :> 1) @@ (q2 :> 1)
 MCWids == {w1, w2}
+\* Fee variant: unequal amounts so a fee of 1 per request is possible.
+MCDepAmtFee == (d1 :> 3) @@ (d2 :> 1)
+MCDepReqIdsFee == {<<d1, 3, TRUE>>, <<d2, 1, FALSE>>, <<d1, 1, TRUE>>}
+MCReqAmtFee == (q1 :> 2) @@ (q2 :> 1)
 
 \* Coverage probes: each should be violated, which shows the state is reachable.
 NeverConfirmed == \A w \in Wids : wtx[w].st # "conf"

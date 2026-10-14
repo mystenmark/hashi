@@ -122,6 +122,46 @@ checked), **review-confirmed** (reviewers traced it in code; no model yet),
   epoch-tag check is necessary: `PresigNoTagCheck.cfg` fails.
 - **Not yet modelled:** explicit batches and seals, digest mismatch.
 
+### F6. A withdrawal whose input is spent elsewhere is stuck forever, with hBTC burned
+
+- **Status:** model-confirmed (review finding R5, with R6 as one cause).
+- **Model:** `Bridge.tla` via `MC_Bridge.tla`, config
+  `BridgeLiveRecovery.cfg` (property `WithdrawalCompletes` fails). Control:
+  `BridgeLive.cfg` passes.
+- **Trace:** a recovery-leaf spend takes a Hashi output on Bitcoin. Its pool
+  record stays Available. A withdrawal commits it as an input, burns the
+  user's hBTC, and becomes fully signed. Its Bitcoin transaction can never be
+  broadcast, and nothing on chain can cancel or replace the withdrawal.
+- **Other causes with the same effect:** any conflicting spend of a pool
+  output, or a deposit reorged deeper than the confirmation threshold.
+
+### F7. Recovery spends break pool soundness and backing
+
+- **Status:** model-confirmed (review finding R6).
+- **Model:** `Bridge.tla`, configs `BridgeRecovery.cfg` (`RecordSound` fails)
+  and `BridgeRecoveryBacking.cfg` (`Backing` fails).
+- **Trace (backing):** a deposit is approved; a recovery spend takes the
+  output before confirmation; `confirm_deposit` mints hBTC with no BTC behind
+  it. This needs a deposit output older than 60 days, which is unusual but
+  possible for a deposit registered late.
+- **Context:** this is the documented escape hatch. The finding is that the
+  pool has no way to learn of such a spend, so the records stay Available
+  and withdrawals keep selecting them (F6).
+
+### F8. Pause does not stop Bitcoin outflow of a committed withdrawal
+
+- **Status:** model-confirmed consequence of review finding R2.
+- **Model:** `Bridge.tla`, config `BridgePausedBroadcast.cfg` (action
+  property `PausedNoWithdrawalBroadcast` fails).
+- **Trace:** a withdrawal is committed; governance pauses; MPC signing and
+  Guardian signing proceed (neither checks pause); the transaction is
+  broadcast without `finalize_withdrawal`.
+- **Caveat:** the model takes the absence of pause checks from the code
+  review (`withdrawals.rs:70-101, 956-976, 1403-1500`; the Guardian has no
+  pause input). The trace shows the consequence, not new evidence for the
+  premise. An honest leader stops all work while paused, so this needs one
+  Byzantine committee member to drive signing.
+
 ## Review findings not yet modelled
 
 These come from the sub-agent code review (`PROTOCOL.md` section 12). They
@@ -130,11 +170,8 @@ are review-confirmed unless marked otherwise.
 | # | Finding | Where to model |
 |---|---|---|
 | R1 | The Guardian follows any handoff signed by its current committee. Honest members sign handoffs to targets that are later aborted. Only the proxy gate, which matches by epoch numbers and trusts its fullnode, stops adoption. | `Reconfig` + Guardian committee chain |
-| R2 | Followers check neither pause nor reconfiguration on the MPC signing RPC, the input-signature cert, or the Guardian-request cert. One Byzantine member can obtain Guardian signatures while paused and broadcast an MPC-complete transaction without `finalize_withdrawal`. | `Bridge` |
 | R3 | The Guardian-request certificate is signed after checking only `W` exists and the timestamp. The limiter check happens later, at finalize, after the Guardian has consumed tokens. | `GuardianLimiter` (partly modelled) |
 | R4 | "One unsigned `W` at a time" is enforced only off chain. Concurrent leaders can commit several. A `W` that never becomes fully signed blocks all later commits by honest leaders. | `Bridge` |
-| R5 | Burn happens at commit; no cancel or replace path exists. A `W` with an input that is invalid on Bitcoin (conflicting spend, deep reorg, recovery spend) reaches FullySigned and rebroadcasts forever; hBTC stays burned and chained children are stranded. | `Bridge` |
-| R6 | The 60-day recovery leaf lets the MPC key alone spend pool UTXOs, bypassing the Guardian and the limiter. Consolidation of old UTXOs is best effort. | `Bridge` |
 | R7 | Change outputs are not validated on chain (address, amount, txid). Relies on an honest 2/3. | `Bridge` |
 | R8 | A Guardian committee push that runs while the Guardian is not activated still sets the per-epoch gate. Finalize stalls until the next Hashi epoch. | `Reconfig` + Guardian |
 | R9 | `start_reconfig` triggers make at most 3 attempts. Clearing `reconfig_hold` triggers nothing. | `Reconfig` |

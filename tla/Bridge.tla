@@ -471,6 +471,11 @@ WithdrawalCompletes ==
 RequestServed ==
     \A q \in Reqs : (wreq[q] = "appr") ~> (wreq[q] \in {"comm", "canc"})
 
+\* R2 probe: no withdrawal transaction enters the mempool while paused.
+PausedNoWithdrawalBroadcast ==
+    [][paused /\ paused' =>
+         \A w \in Wids : WTx(w) \in mempool' => WTx(w) \in mempool]_vars
+
 \* 13. Withdrawal confirmation soundness.
 ConfirmSound ==
     \A w \in Wids : wtx[w].st = "conf" => WTx(w) \in finalTx
