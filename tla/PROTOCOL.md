@@ -781,7 +781,7 @@ Status after review: **confirmed** (behaviour exists and matters),
 | 10 | Withdrawal approvals from old epochs accepted at commit. | By design. Honest nodes never refresh approvals. |
 | 11 | Deposits not re-checked between approve and confirm. | Overstated under the reorg assumption. Real if governance lowers the confirmation threshold. |
 | 12 | `confirm_withdrawal` is not reconfig-gated. | Benign. Soundness rests on the Bitcoin check. |
-| 13 | Complaint responses are off by default. | Confirmed. Liveness risk for DKG and rotation; breaks "every honest member holds a share". |
+| 13 | Complaint responses are off by default. | Confirmed by `DkgOutputs`. With default `mpc_max_faulty_in_basis_points = 3333`, one Byzantine member of weight below `f` can block every DKG or rotation: its certificate enters the prefix, it gives bad shares to `f` honest weight, and it withholds its completion signature. Each pending reconfiguration then aborts, which halts the bridge (2.4). |
 | 14 | Dealer certs are not verified on chain. | Confirmed, low impact. A junk entry excludes only its sender. |
 | 15 | Child-before-parent confirmation on Sui. | Benign. Reachable with an honest committee; Move handles it. |
 | 16 | Governance votes persist across epochs. | Confirmed. Non-members count 0. |
