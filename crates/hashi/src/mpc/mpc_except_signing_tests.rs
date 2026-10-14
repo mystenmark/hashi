@@ -5441,6 +5441,16 @@ fn create_cheating_message(
     corrupt_party_id: u16,
     rng: &mut impl fastcrypto::traits::AllowedRng,
 ) -> avss::Message {
+    create_cheating_message_for_parties(setup, dealer_index, &[corrupt_party_id], rng)
+}
+
+/// Create a cheating dealer message with corrupted shares for each of `corrupt_party_ids`.
+fn create_cheating_message_for_parties(
+    setup: &TestSetup,
+    dealer_index: usize,
+    corrupt_party_ids: &[u16],
+    rng: &mut impl fastcrypto::traits::AllowedRng,
+) -> avss::Message {
     use fastcrypto::groups::secp256k1::ProjectivePoint;
     type S = <ProjectivePoint as fastcrypto::groups::GroupElement>::ScalarType;
 
@@ -5469,11 +5479,13 @@ fn create_cheating_message(
         })
         .collect();
 
-    // Corrupt the plaintext shares for the target party
-    if corrupt_party_id < pk_and_msgs.len() as u16 {
-        let idx = corrupt_party_id as usize;
-        if pk_and_msgs[idx].1.len() > 7 {
-            pk_and_msgs[idx].1[7] ^= 1; // Flip one bit
+    // Corrupt the plaintext shares for the target parties
+    for &corrupt_party_id in corrupt_party_ids {
+        if corrupt_party_id < pk_and_msgs.len() as u16 {
+            let idx = corrupt_party_id as usize;
+            if pk_and_msgs[idx].1.len() > 7 {
+                pk_and_msgs[idx].1[7] ^= 1; // Flip one bit
+            }
         }
     }
 
@@ -19055,4 +19067,191 @@ fn the_snapshot_is_published_before_the_swap_waits_for_the_manager_lock() {
     drop(held);
     installer.join().unwrap();
     assert_eq!(lock.read().unwrap().mpc_config.epoch, epoch + 1);
+}
+
+/// Runs DKG on 10 unit-weight members (f = 3, t = 4, dealer cert quorum
+/// t + f = 7) where member 0 is a Byzantine dealer that corrupts the shares
+/// of honest members 1..=3 and still certifies with the other 7 signatures.
+/// Its cert is first in TOB order, followed by certs from honest dealers
+/// 4..=9. Honest members answer complaints according to `policy`; the
+/// Byzantine dealer never answers. Returns each honest member's DKG result.
+async fn run_dkg_with_byzantine_dealer_hurting_f_members(
+    policy: ComplaintResponsePolicy,
+) -> (TestSetup, Vec<(usize, MpcResult<MpcOutput>)>) {
+    let mut rng = rand::thread_rng();
+    let n = 10;
+    let byzantine = 0usize;
+    let hurt = [1usize, 2, 3];
+    let honest_dealers = 4usize..n;
+    let setup = TestSetup::new(n);
+
+    let config = setup.dkg_config();
+    assert_eq!(config.max_faulty, 3);
+    assert_eq!(config.threshold, 4);
+    let cert_quorum = (config.threshold + config.max_faulty) as usize;
+    assert_eq!(cert_quorum, 7);
+    // The hurt set is as large as a dealer cert allows: W - (t + f) = f.
+    assert_eq!(hurt.len(), n - cert_quorum);
+
+    let mut managers: HashMap<usize, MpcManager> = (0..n)
+        .map(|i| {
+            let mut mgr = setup.create_manager(i);
+            mgr.complaint_response_policy = if i == byzantine {
+                ComplaintResponsePolicy::AllowList { dealers: vec![] }
+            } else {
+                policy.clone()
+            };
+            (i, mgr)
+        })
+        .collect();
+
+    let deal = |managers: &mut HashMap<usize, MpcManager>, dealer: usize, messages: &Messages| {
+        let dealer_addr = setup.address(dealer);
+        let mut signatures = Vec::new();
+        let mut refused = Vec::new();
+        for i in 0..n {
+            let mgr = managers.get_mut(&i).unwrap();
+            let result = if i == dealer {
+                receive_dealer_messages(mgr, messages, dealer_addr)
+            } else {
+                mgr.handle_send_messages_request(
+                    dealer_addr,
+                    &SendMessagesRequest {
+                        messages: messages.clone(),
+                    },
+                )
+                .map(|r| MemberSignature::new(setup.epoch(), setup.address(i), r.signature))
+            };
+            match result {
+                Ok(sig) => signatures.push(sig),
+                Err(_) => refused.push(i),
+            }
+        }
+        let cert =
+            create_test_certificate(setup.committee(), messages, dealer_addr, signatures).unwrap();
+        (CertificateV1::Dkg(cert), refused)
+    };
+
+    let hurt_ids: Vec<u16> = hurt.iter().map(|&i| i as u16).collect();
+    let bad_messages = Messages::Dkg(create_cheating_message_for_parties(
+        &setup, byzantine, &hurt_ids, &mut rng,
+    ));
+    let (bad_cert, refused) = deal(&mut managers, byzantine, &bad_messages);
+    assert_eq!(refused, hurt, "exactly the hurt members refuse to sign");
+    let mut certs = vec![bad_cert];
+    for dealer in honest_dealers {
+        let messages = Messages::Dkg(managers[&dealer].create_dealer_message(&mut rng));
+        let (cert, refused) = deal(&mut managers, dealer, &messages);
+        assert!(refused.is_empty());
+        certs.push(cert);
+    }
+    // The Byzantine cert carries exactly t + f signatures and passes the
+    // reader-side check.
+    managers[&4].verify_certificate(certs[0].clone()).unwrap();
+
+    let mut results = Vec::new();
+    for party in 1..n {
+        let party_mgr = Arc::new(RwLock::new(managers.remove(&party).unwrap()));
+        let others: HashMap<Address, MpcManager> = std::mem::take(&mut managers)
+            .into_iter()
+            .map(|(i, m)| (setup.address(i), m))
+            .collect();
+        let p2p = MockP2PChannel::new(others, setup.address(party));
+        let mut tob = MockOrderedBroadcastChannel::new(certs.clone());
+        let result = MpcManager::run_dkg(&party_mgr, &p2p, &mut tob, &test_metrics()).await;
+        assert_eq!(
+            tob.published_count(),
+            0,
+            "certified weight >= t skips dealing"
+        );
+        results.push((party, result));
+
+        managers = std::mem::take(&mut *p2p.managers.lock().unwrap())
+            .into_iter()
+            .map(|(addr, m)| (addr.as_bytes()[0] as usize, m))
+            .collect();
+        let Ok(party_mgr) = Arc::try_unwrap(party_mgr) else {
+            panic!("party Arc still shared");
+        };
+        managers.insert(party, party_mgr.into_inner().unwrap());
+    }
+    (setup, results)
+}
+
+/// With the default deny-all complaint policy, one Byzantine dealer that
+/// corrupts the shares of f honest members leaves only W - 1 - f honest
+/// members with a DKG output, which is below the reconfig completion
+/// certificate threshold.
+// Paused time skips the backoff of the withheld complaints' retries.
+#[tokio::test(start_paused = true)]
+async fn test_dkg_byzantine_dealer_blocks_completion_under_deny_all_policy() {
+    let (setup, results) =
+        run_dkg_with_byzantine_dealer_hurting_f_members(ComplaintResponsePolicy::AllowList {
+            dealers: vec![],
+        })
+        .await;
+
+    let mut with_output = Vec::new();
+    for (party, result) in &results {
+        match result {
+            Ok(output) => with_output.push((*party, output.public_key)),
+            Err(e) => {
+                assert!(
+                    [1, 2, 3].contains(party),
+                    "unhurt member {party} failed: {e}"
+                );
+                assert!(
+                    e.to_string()
+                        .contains("Not enough valid complaint responses"),
+                    "member {party} failed for another reason: {e}"
+                );
+            }
+        }
+    }
+    let parties: Vec<usize> = with_output.iter().map(|(p, _)| *p).collect();
+    assert_eq!(parties, vec![4, 5, 6, 7, 8, 9]);
+    assert!(with_output.iter().all(|(_, pk)| *pk == with_output[0].1));
+
+    let committee = setup.committee();
+    let honest_output_weight: u64 = parties
+        .iter()
+        .map(|&p| committee.weight_of(&setup.address(p)).unwrap())
+        .sum();
+    let completion_threshold =
+        hashi_types::committee::certificate_threshold(committee.total_weight());
+    assert_eq!(completion_threshold, 7);
+    assert!(
+        honest_output_weight < completion_threshold,
+        "honest output weight {honest_output_weight} reaches completion threshold \
+         {completion_threshold}"
+    );
+}
+
+/// Contrast to the deny-all case: when honest members answer complaints,
+/// every honest member recovers and completes DKG.
+#[tokio::test]
+async fn test_dkg_byzantine_dealer_recovered_under_allow_all_policy() {
+    let (setup, results) =
+        run_dkg_with_byzantine_dealer_hurting_f_members(ComplaintResponsePolicy::AllowAll).await;
+
+    let outputs: Vec<(usize, MpcOutput)> = results
+        .into_iter()
+        .map(|(party, result)| {
+            (
+                party,
+                result.unwrap_or_else(|e| panic!("member {party} failed: {e}")),
+            )
+        })
+        .collect();
+    assert_eq!(outputs.len(), 9);
+    assert!(
+        outputs
+            .iter()
+            .all(|(_, o)| o.public_key == outputs[0].1.public_key)
+    );
+    let committee = setup.committee();
+    assert!(
+        outputs.len() as u64
+            >= hashi_types::committee::certificate_threshold(committee.total_weight())
+    );
 }
