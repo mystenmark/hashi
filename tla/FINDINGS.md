@@ -186,6 +186,60 @@ checked), **review-confirmed** (reviewers traced it in code; no model yet),
   premise. An honest leader stops all work while paused, so this needs one
   Byzantine committee member to drive signing.
 
+### F9. The Guardian can stay on an old committee for a whole Hashi epoch
+
+- **Status:** model-confirmed (review finding R8); code read directly.
+  Severity: liveness of withdrawal signing.
+- **Model:** `Reconfig.tla`, config `ReconfigGuardianLive.cfg`
+  (`GuardianCatchesUp` fails).
+- **Mechanism:** each node reconciles the Guardian's committee at most once
+  per Hashi epoch while leader (`leader/guardian.rs:30-51`). If
+  `GetGuardianInfo` reports no committee, as a standby or not-yet-activated
+  Guardian does, `reconcile_guardian_committee` returns `Ok` (`:263-266`),
+  and the leader keeps its per-epoch gate set (`leader/mod.rs:452-458` only
+  clears it on error).
+- **Trace:** the Guardian is down; a reconfiguration completes; every node
+  takes a leader turn and sets its gate; the Guardian comes back on the old
+  committee. Nothing retries until the next Hashi epoch or a node restart.
+  Until then the Guardian rejects certificates from the new committee
+  (`cert.epoch` must equal its committee epoch), so finalize stalls.
+- **Fix direction:** treat "no committee reported" as a failure so the gate
+  clears and the next tick retries.
+
+### F10. Without the proxy gate the Guardian adopts an aborted committee
+
+- **Status:** model-confirmed (review finding R1). The proxy gate closes it.
+- **Model:** `Reconfig.tla`, config `ReconfigNoGate.cfg`
+  (`GuardianCompleted` fails); `Reconfig.cfg` passes with the gate.
+- **Mechanism:** honest outgoing members sign a handoff to whatever
+  committee is pending (`withdrawals.rs:1263-1297`,
+  `onchain/mod.rs:695-704`). A pending target can later abort. The enclave
+  accepts any handoff its current committee signed
+  (`committee_update.rs:19-78`); only the proxy checks that the chain stores
+  the handoff (`hashi-guardian-proxy/src/node/handoffs.rs`).
+- **Residual exposure:** the gate trusts the proxy's fullnode and assumes no
+  path to the enclave bypasses the proxy. Once the Guardian adopts a
+  committee, it cannot go back.
+
+### F11. Reconfiguration driver: no unclassified aborts, and bounded start retries
+
+- **Status:** closed for safety; liveness gap confirmed as by design.
+- **Model:** `Reconfig.tla`. `Reconfig.cfg` passes `NoPanic`,
+  `PendingWindow`, `CompleteXorAbort`, `NoEpochReuse`, `HandoffChain`,
+  `GuardianCompleted`, `GuardianNotAhead`, and `HashiMonotone` with
+  transient failures, holds, MPC failure, and lagging node views.
+  `ReconfigLive.cfg` passes `HashiCatchesUp` without transient failures or
+  holds.
+- **Code check:** completion and handoff signatures are verified one by one
+  before aggregation (`hashi-types/src/committee.rs:757-830`), so a
+  Byzantine member's bad signature cannot drive an honest node into the
+  panic at `service.rs:2045-2065`.
+- **Liveness gap (R9):** `ReconfigLiveTransient.cfg` fails. If every node's
+  `start_reconfig` attempts fail for one trigger, nothing retries until the
+  next Sui epoch change, abort notification, or restart. Clearing
+  `reconfig_hold` likewise triggers nothing; `design/docs/reconfiguration.mdx`
+  documents this. The delay is at most one Sui epoch.
+
 ## Review findings not yet modelled
 
 These come from the sub-agent code review (`PROTOCOL.md` section 12). They
@@ -193,16 +247,12 @@ are review-confirmed unless marked otherwise.
 
 | # | Finding | Where to model |
 |---|---|---|
-| R1 | The Guardian follows any handoff signed by its current committee. Honest members sign handoffs to targets that are later aborted. Only the proxy gate, which matches by epoch numbers and trusts its fullnode, stops adoption. | `Reconfig` + Guardian committee chain |
 | R3 | The Guardian-request certificate is signed after checking only `W` exists and the timestamp. The limiter check happens later, at finalize, after the Guardian has consumed tokens. | `GuardianLimiter` (partly modelled) |
 | R4 | "One unsigned `W` at a time" is enforced only off chain. Concurrent leaders can commit several. A `W` that never becomes fully signed blocks all later commits by honest leaders. | `Bridge` |
 | R7 | Change outputs are not validated on chain (address, amount, txid). Relies on an honest 2/3. | `Bridge` |
-| R8 | A Guardian committee push that runs while the Guardian is not activated still sets the per-epoch gate. Finalize stalls until the next Hashi epoch. | `Reconfig` + Guardian |
-| R9 | `start_reconfig` triggers make at most 3 attempts. Clearing `reconfig_hold` triggers nothing. | `Reconfig` |
 | R10 | A member with 5% weight can pause alone; more than 1/3 can block unpause. | `Reconfig` / governance |
 | R11 | Limiter config is per Guardian session; activation only caps tokens. A rotation can raise `max` or `rate`. | Guardian sessions |
 | R12 | Limiter recovery at activation reads only two hour directories. Writer-ahead clock skew above about 1 hour can roll back `seq` and tokens or allow a second activation. | Guardian sessions |
 | R13 | Proxy replay data is kept 30 days; a retry after that consumes tokens again. | Guardian sessions |
 | R14 | Repeated reconfigurations re-approve deposits and restart the delay, which can starve confirmation. | `Bridge` |
-| R15 | The node panics on any unclassified Move abort in `end_reconfig`. | `Reconfig` |
 | R16 | Seal signatures are kept in memory only; after a restart a node may sign a different dealer-set digest. Liveness only. | `Presig` (batches) |
