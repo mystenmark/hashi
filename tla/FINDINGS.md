@@ -108,26 +108,33 @@ checked), **review-confirmed** (reviewers traced it in code; no model yet),
   which gives `max + rate * (window + 900 s)`. Both hold for one limiter
   config; a Guardian rotation can change `max` and `rate`.
 
-### F4. Nonce reuse after a code change in the middle of an epoch
+### F4. Nonce reuse if batch derivation changes within an epoch
 
-- **Status:** model-confirmed for the abstract mechanism; the concrete code
-  path needs owner confirmation. Severity: key-share leak for one node,
-  narrow preconditions.
+- **Status:** model-confirmed for the abstract mechanism; downgraded to a
+  hardening suggestion after code review. Severity if triggered: key-share
+  leak for one node.
 - **Model:** `Presig.tla`, config `PresigCodeChange.cfg` (fails);
   `Presig.cfg` (passes, 107.5M states) with the map fixed.
-- **Mechanism:** a node maps a global presig index to a local presignature by
-  cumulative batch sizes, which come from code (`BATCH_SIZE_PER_WEIGHT`,
-  admission rules; `service.rs:2495-2502`, `signing.rs:914-960`). The seal
-  stores only the dealer-set digest. Scenario:
-  1. A node's digest for batch `k` disagrees with the seal, so its size for
-     batch `k` differs from the canonical size.
-  2. Its digest for batch `k + 1` matches. It signs index `g1` with local
-     position `p`.
-  3. An upgrade in the same epoch changes the size computation. After restart,
-     `p` maps to index `g2`, which is re-enabled.
-  4. The node signs a different request with presignature `p`.
-- **Fix direction:** put the batch size or start index in the seal, or check
-  local start indices against seal-derived sizes.
+- **Mechanism:** a node maps a global presig index to a local position by
+  cumulative installed batch sizes (`signing.rs:920-950`). After a restart,
+  recovery disables indices using the new binary's map; nothing records
+  which presignature an index used. If a release changes the size of an
+  installed batch below an index the node already signed, a still-Pending
+  index can resolve to the used position and sign a second request.
+- **Why it is unlikely:** `BATCH_SIZE_PER_WEIGHT` has been 10 since it was
+  introduced (`cc3845c6`), and its override is rejected on mainnet and
+  testnet (`lib.rs:740-749`). The reviewer's digest-mismatch precondition is
+  largely closed: batches with node-local skips are discarded
+  (`service.rs:831-837`), sizes are checked against admitted weight
+  (`service.rs:856-860`), and batches install contiguously. The admission
+  rules that set batch sizes have changed in releases (#841, its revert,
+  #953), but the team gated a past derivation change on an activation epoch
+  "chosen at least one epoch ahead" (removed in `bb3f6811`), which is the
+  discipline that rules this out.
+- **Suggestion:** persist each installed batch's start index and size per
+  epoch, and refuse to install a different one after a restart in the same
+  epoch. This turns a silent leak into a loud failure if a future release
+  gets the gating wrong.
 
 ### F5. Nonce safety holds under the stated assumptions
 
