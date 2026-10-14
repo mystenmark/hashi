@@ -13,7 +13,24 @@ checked), **review-confirmed** (reviewers traced it in code; no model yet),
 
 ### F1. One Byzantine member can block every DKG and key rotation
 
-- **Status:** model-confirmed. Severity: liveness of the whole bridge.
+- **Status:** reproduced in a Rust test (DKG). Severity: liveness of the
+  whole bridge until operators act.
+- **Test:** branch `mlogan-f1-dkg-complaint-test` (commit `ed9512e8`),
+  `crates/hashi/src/mpc/mpc_except_signing_tests.rs`:
+  `test_dkg_byzantine_dealer_blocks_completion_under_deny_all_policy` and
+  the contrast `test_dkg_byzantine_dealer_recovered_under_allow_all_policy`.
+  Ten unit-weight members; dealer 0 corrupts shares for members 1-3 and its
+  certificate is first in TOB order. Under deny-all, members 1-3 fail with
+  "Not enough valid complaint responses" and members 4-9 (weight 6) hold
+  outputs; the completion threshold is 7. Under allow-all, all 9 honest
+  members produce the same key. The test drives the real receiver,
+  `run_dkg`, and `handle_complain_request` paths.
+- **Refinements from the test:** the failed recovery aborts the whole party
+  phase; the party does not move on to later dealers. Each complaint is
+  retried up to 10 times, and `handle_reconfig` then retries the protocol
+  until the window closes, hitting the same denial each time. Recovery
+  requires operators to allow-list `(epoch, dealer)` or the epoch to end in
+  an abort. Rotation uses the same `?` pattern but was not tested.
 - **Model:** `DkgOutputs.tla`, configs `DkgOutputs.cfg`,
   `DkgOutputsOneByz.cfg`. Controls: `DkgOutputsComplaints.cfg`,
   `DkgOutputsOneByzComplaints.cfg` pass.
