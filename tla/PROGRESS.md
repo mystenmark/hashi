@@ -50,6 +50,21 @@
   - Code check: a failed complaint recovery propagates an error
     (`mpc_except_signing.rs:1768-1775`), so the party has no output.
 
+- `Bridge` (via `MC_Bridge.tla`):
+  - `Bridge.cfg` (honest certs, faults on): all nine safety invariants pass,
+    1.8M states. Coverage probes (`NeverConfirmed`, `NeverChained`,
+    `NeverChildFirst`, `NeverBothWithdrawn` in `MC_Bridge.tla`) are all
+    violated, so confirmation, chaining, and child-first are reachable.
+  - `BridgeFee.cfg` (fee 1 per request): passes, 3.1M states.
+  - `BridgeByzCerts.cfg` (arbitrary certs): chain-only invariants pass,
+    127.4M states, 16 min.
+  - `BridgeRecovery.cfg`, `BridgeRecoveryBacking.cfg`: RecordSound and
+    Backing fail (F7).
+  - `BridgeLive.cfg` (no faults, leader guard): liveness passes.
+    `BridgeLiveRecovery.cfg`: WithdrawalCompletes fails (F6).
+  - `BridgePausedBroadcast.cfg`: fails (F8).
+- Validation: a sub-agent is writing a Rust test to reproduce F1.
+
 ## Remaining
 
 - `Presig`: result of full config (`Presig.cfg`, MaxIndex 3, MaxRand 4).
@@ -59,5 +74,4 @@
   (safety 19); committee chain and proxy handoff gate (safety 16); liveness
   "consumed implies finalized".
 - Write and check `Reconfig`.
-- Write and check `Bridge`.
 - After the full system model: revisit `tla/FINDINGS.md` with code owners.
