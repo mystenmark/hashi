@@ -4,6 +4,10 @@
 
 - Explored design docs, Move package, node, and Guardian.
 - Wrote the informal protocol description in `tla/PROTOCOL.md`.
+- Four sub-agents reviewed PROTOCOL.md against the code (reconfig/governance,
+  bridge, MPC/presig, Guardian). Folded their errors, omissions, and property
+  corrections into the document. Section 12 now records a status per flagged
+  point.
 
 ## Remaining
 
