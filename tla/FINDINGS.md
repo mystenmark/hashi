@@ -146,14 +146,55 @@ checked), **review-confirmed** (reviewers traced it in code; no model yet),
   epoch-tag check is necessary: `PresigNoTagCheck.cfg` fails.
 - **Not yet modelled:** explicit batches and seals, digest mismatch.
 
-### F6. A pool record whose Bitcoin output is already spent strands every withdrawal that uses it
+### F6. Merged into F7
 
-- **Status:** model-confirmed (review finding R5, with R6 as one cause);
-  the two code facts below were checked directly. Severity: loss of user
-  funds until manual intervention; requires an out-of-band spend.
-- **Model:** `Bridge.tla` via `MC_Bridge.tla`, config
-  `BridgeLiveRecovery.cfg` (property `WithdrawalCompletes` fails). Control:
-  `BridgeLive.cfg` passes.
+The stranded-withdrawal sequence that was F6 is the aftermath of F7 and is
+described there.
+
+### F7. Past committees can spend pool UTXOs older than 60 days without the Guardian
+
+- **Status:** review-confirmed design analysis; the aftermath is
+  model-confirmed. Severity: theft of idle pool funds by a past committee,
+  bypassing the Guardian and the rate limiter, followed by stranded
+  withdrawals for unrelated users.
+- **Model:** `Bridge.tla` via `MC_Bridge.tla`. `BridgeRecovery.cfg`
+  (`RecordSound` fails), `BridgeRecoveryBacking.cfg` (`Backing` fails), and
+  `BridgeLiveRecovery.cfg` (`WithdrawalCompletes` fails) show the effect of a
+  recovery spend. The model does not represent committees or key shares;
+  the three facts below come from the code and design docs.
+
+**Three facts.**
+
+1. **Recovery leaf.** Every pool UTXO, deposit and change alike, is
+   `tr(NUMS, {multi_a(2, guardian, h), and_v(older(60 days), pk(h))})`
+   (`design/docs/address-scheme.mdx`, `deposits.rs:403-406`). The MPC key
+   alone can spend it 60 days after it confirms: no Guardian signature, no
+   limiter, no onchain step.
+2. **Rotation keeps the key.** Key rotation reshares the same group key; the
+   new key must equal the old one (`mpc_except_signing.rs:4936-4945`,
+   `committee_set.move:501`). Shares from any past committee that meet that
+   committee's threshold therefore reconstruct today's key. Honest nodes
+   prune old epoch data (`service.rs:363`); colluding members need not.
+3. **Refresh is opportunistic.** Only spending a UTXO resets its 60-day
+   clock. Old UTXOs (more than 4,320 blocks, about 30 days;
+   `utxo_pool/mod.rs:66`) are prioritised only as extra consolidation inputs
+   to a withdrawal that is already being built, and only when it has change,
+   the fee rate is below the high threshold, and the batch is under its
+   per-request input cap (`utxo_pool/mod.rs:880-893`). No dedicated refresh
+   transaction exists.
+
+**Consequence.** The Guardian exists "to protect against vulnerabilities and
+against malicious past committees" (`design/docs/guardian.mdx`). That
+protection lasts 60 days per UTXO. After that, any group holding threshold
+weight in any past committee can spend the UTXO directly on Bitcoin. Idle
+funds are the most exposed: in a quiet period, or while high fees disable
+consolidation, pool UTXOs age past 60 days. The set of groups that could do
+this grows with every epoch.
+
+**Aftermath: stranded withdrawals.** Hashi does not detect the spend. The
+stolen outputs' pool records stay Available, and the next withdrawals that
+select them fail. The loss lands on whichever users' requests are batched
+with those inputs.
 
 **Objects involved.**
 
@@ -220,24 +261,26 @@ and it is approved; `CommitWithdrawal` takes the record as input; MPC and
 Guardian sign; `FinalizeWithdrawal` succeeds; then nothing can happen to
 `W`.
 
-**Fix directions.** Check that each confirmed input exists and is unspent on
+**Fix directions for the aftermath.** Check that each confirmed input exists and is unspent on
 Bitcoin before signing the commit certificate. Add a path that, on a
 certificate showing an input is spent on Bitcoin, unwinds `W`: unlock the
 other inputs, remove `C`, and re-mint or refund `R`'s hBTC. Treat
 `missing-inputs` at finalize as a reason to refuse.
 
-### F7. Recovery spends break pool soundness and backing
+**Fix directions for the cause.**
 
-- **Status:** model-confirmed (review finding R6).
-- **Model:** `Bridge.tla`, configs `BridgeRecovery.cfg` (`RecordSound` fails)
-  and `BridgeRecoveryBacking.cfg` (`Backing` fails).
-- **Trace (backing):** a deposit is approved; a recovery spend takes the
-  output before confirmation; `confirm_deposit` mints hBTC with no BTC behind
-  it. This needs a deposit output older than 60 days, which is unusual but
-  possible for a deposit registered late.
-- **Context:** this is the documented escape hatch. The finding is that the
-  pool has no way to learn of such a spend, so the records stay Available
-  and withdrawals keep selecting them (F6).
+- A guaranteed refresh: spend every pool UTXO before about 45 days,
+  independent of withdrawal traffic and fee rate.
+- Monitoring that alerts when a pool output is spent outside the protocol,
+  plus a certified way to remove its record.
+- Reconsider whether the recovery leaf should use the same key that rotation
+  carries across committees, for example a key that only the current
+  committee holds, or a much longer delay.
+
+**Open questions.** Is a past committee's threshold the reduced-weight `t`
+of that epoch? Do honest nodes erase old key shares, not only protocol
+messages, after rotation? How large does the pool's share of UTXOs older
+than 60 days get in practice?
 
 ### F8. Pause does not stop Bitcoin outflow of a committed withdrawal
 
