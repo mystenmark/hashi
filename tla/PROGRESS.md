@@ -63,7 +63,8 @@
   - `BridgeLive.cfg` (no faults, leader guard): liveness passes.
     `BridgeLiveRecovery.cfg`: WithdrawalCompletes fails (F6).
   - `BridgePausedBroadcast.cfg`: fails (F8).
-- Validation: a sub-agent is writing a Rust test to reproduce F1.
+- Validation: F1 reproduced in a Rust test on branch
+  `mlogan-f1-dkg-complaint-test` (see FINDINGS.md F1).
 
 ## Remaining
 
