@@ -60,4 +60,4 @@
   "consumed implies finalized".
 - Write and check `Reconfig`.
 - Write and check `Bridge`.
-- Triage flagged points (PROTOCOL.md section 12) against model results.
+- After the full system model: revisit `tla/FINDINGS.md` with code owners.
