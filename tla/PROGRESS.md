@@ -8,14 +8,25 @@
   bridge, MPC/presig, Guardian). Folded their errors, omissions, and property
   corrections into the document. Section 12 now records a status per flagged
   point.
+- Installed OpenJDK 21 (Homebrew) and tla2tools.jar v1.7.4 in
+  `~/.local/share/tla/`. Run TLC with `tla/tlc.sh -config X.cfg X.tla`.
+- `Presig` (first cut):
+  - `PresigSmall.cfg` (MaxIndex 2, MaxRand 3): passes all invariants,
+    3.9M distinct states, 35 s.
+  - `PresigNoTagCheck.cfg`: NonceSafety violated (stale slot signed with the
+    new epoch's pool), as expected.
+  - `PresigCodeChange.cfg`: NonceSafety violated (index-to-presignature map
+    changes across restart), confirming PROTOCOL.md 8.5 residual case.
+  - Abstractions: batches, seals, and digest mismatch are folded into the
+    per-node map; `RecordSig` is nondeterministic; signers are honest nodes
+    and any member may request a signature.
 
 ## Remaining
 
-- Agree on module decomposition and abstractions (PROTOCOL.md section 13).
-- Check that the TLA+ tools (tla2tools.jar / TLC, optionally Apalache) are
-  installed.
+- `Presig`: result of full config (`Presig.cfg`, MaxIndex 3, MaxRand 4).
+  Consider modelling batches and seals explicitly so the residual case
+  arises only from a digest mismatch plus a code change.
+- Write and check `Guardian`.
 - Write and check `Reconfig`.
 - Write and check `Bridge`.
-- Write and check `Presig`.
-- Write and check `Guardian`.
 - Triage flagged points (PROTOCOL.md section 12) against model results.
