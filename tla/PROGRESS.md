@@ -37,6 +37,19 @@
   - Abstractions: one clock for enclave and nodes; any snap allowed when
     SnapBehind (the code waits about 5 minutes); snaps bounded by MaxSnaps.
 
+- `Presig.cfg` (MaxIndex 3, MaxRand 4): passes, 107.5M distinct states,
+  17 min.
+- `DkgOutputs` (unit weights, 10 members, default 3333 bps: f = 3, t = 4,
+  dealer cert 7, completion 7; the adversary picks the TOB prefix):
+  - `DkgOutputs.cfg`: two Byzantine dealers hurt 4 honest members;
+    honest holders plus Byzantine = 6 < 7. CanComplete violated.
+  - `DkgOutputsOneByz.cfg`: one Byzantine dealer hurts 3 honest members and
+    withholds its completion signature; honest holders = 6 < 7.
+    HonestCanComplete violated.
+  - `DkgOutputsComplaints.cfg`, `DkgOutputsOneByzComplaints.cfg`: pass.
+  - Code check: a failed complaint recovery propagates an error
+    (`mpc_except_signing.rs:1768-1775`), so the party has no output.
+
 ## Remaining
 
 - `Presig`: result of full config (`Presig.cfg`, MaxIndex 3, MaxRand 4).
