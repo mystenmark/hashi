@@ -65,7 +65,7 @@
   - `BridgePausedBroadcast.cfg`: fails (F8).
 - `Reconfig` (chain reconfig after genesis, node driver, Guardian committee
   chain):
-  - `Reconfig.cfg`: all safety properties pass, 4.2M states.
+  - `Reconfig.cfg`: all safety properties pass, 13.5M states.
   - `ReconfigNoGate.cfg`: Guardian adopts an aborted committee (F10).
   - `ReconfigLive.cfg`: HashiCatchesUp passes (no transient failures, no
     holds). With holds, governance toggling forever defeats liveness; that
