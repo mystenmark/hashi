@@ -129,6 +129,10 @@
 
 ## Done in this pass
 
+- Deposits end to end: `DepositMinted` holds with refiling, with
+  reconfiguration; fails without refiling and with the pause loop. Table
+  in FINDINGS.md.
+
 - Guardian link: `GuardianSigns => RequestPaid` in Bridge without Guardian
   fairness; `ReadyConsumed` in `GuardianLimiterSeq`; `ReadyIsMpcRec` in
   `BridgeLimiter`. End-to-end table in FINDINGS.md.
