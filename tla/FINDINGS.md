@@ -15,6 +15,32 @@ checked), **review-confirmed** (reviewers traced it in code; no model yet),
 
 - **Status:** reproduced in a Rust test (DKG). Severity: liveness of the
   whole bridge until operators act.
+- **Threat model:**
+  - **Who:** one Byzantine member whose reduced weight is above 0, because
+    its operator is malicious or its machine is compromised. In DKG it must
+    be in the pending committee. In rotation it must hold a previous share,
+    so an outgoing member that `IgnoreMember` removed from the new committee
+    still qualifies, because old-only members deal (`PROTOCOL.md` 8.2). Sui
+    orders the TOB, not the attacker. Its certificate must land among the
+    first dealers whose weight reaches `t` (DKG) or among the first
+    `previousThreshold` indices (rotation). It races for that slot by
+    submitting as soon as it holds the certificate
+    ([`cert_submission.move:53-77`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/packages/hashi/sources/core/cert_submission.move#L53-L77)).
+    If it loses, it retries next epoch.
+  - **Why:** extortion of operators or users by halting deposits and
+    withdrawals every epoch; profit from a short position on hBTC or on Sui
+    assets; harm to a rival bridge. It can also keep its seat after
+    governance votes to remove it (for example after R10 pause abuse),
+    because it deals in the rotation that removes it. A state actor can
+    compel one validator operator.
+  - **Without an adversary:** a dealer bug that corrupts shares for some
+    receivers, plus ordinary offline weight, can push the honest holders
+    below 2/3.
+  - **In scope:** yes. One member is far below the faulty bound that
+    `mpc_max_faulty_in_basis_points` sets for "offline or adversarial"
+    weight ([`config.mdx`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/design/docs/config.mdx)).
+    Reconfiguration liveness assumes an honest and live 2/3 (`PROTOCOL.md`
+    1, 11 Liveness 5).
 - **Test:** branch [`mlogan-f1-dkg-complaint-test`](https://github.com/mystenmark/hashi/tree/mlogan-f1-dkg-complaint-test) (commit [`ed9512e8`](https://github.com/mystenmark/hashi/commit/ed9512e825c1f1daab79d74126fc86cd92f0f4ca)),
   [`crates/hashi/src/mpc/mpc_except_signing_tests.rs`](https://github.com/mystenmark/hashi/blob/ed9512e825c1f1daab79d74126fc86cd92f0f4ca/crates/hashi/src/mpc/mpc_except_signing_tests.rs):
   `test_dkg_byzantine_dealer_blocks_completion_under_deny_all_policy` and
@@ -41,8 +67,9 @@ checked), **review-confirmed** (reviewers traced it in code; no model yet),
   1. A dealer certificate needs `t + f` of reduced weight. Byzantine receivers
      always sign, so a Byzantine dealer can give bad shares to up to
      `W - t - f = f` of honest weight and still get a certificate.
-  2. The adversary orders the TOB, so its certificate can land in the
-     selected prefix.
+  2. Sui orders the TOB. The Byzantine dealer submits its certificate as
+     soon as it has one, so it can land in the selected prefix; if it does
+     not, the dealer tries again next epoch.
   3. An honest party with bad shares from a selected dealer sends complaints.
      Nobody answers. `recover_dkg_shares_via_complaint(...).await?` fails
      ([`mpc_except_signing.rs:1768-1775`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/mpc/mpc_except_signing.rs#L1768-L1775), error at [`:4572`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/mpc/mpc_except_signing.rs#L4572)), so the party never
@@ -69,6 +96,36 @@ checked), **review-confirmed** (reviewers traced it in code; no model yet),
 - **Status:** reproduced in Rust tests. Severity: limiter accounting and
   liveness. No extra BTC moves, because both signatures cover the same
   transaction.
+- **Threat model:**
+  - **No adversary needed.** A node restart or a reconcile snap during an
+    in-flight `W`, followed by two leaders whose turns overlap, reaches it.
+    Rolling node upgrades and Guardian activations create the seed
+    condition as routine operations.
+  - **One Byzantine member, on demand.** Any member of the current or
+    pending committee, with any weight, can cause it and needs no leader
+    turn. The proxy admits any such member
+    ([`member_auth.rs:41-53`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi-guardian-proxy/src/node/member_auth.rs#L41-L53)).
+    Honest nodes certify a request from any registered caller at any `seq`
+    and check only `ts`
+    ([`bridge_service.rs:180-200`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/grpc/bridge_service.rs#L180-L200),
+    [`withdrawals.rs:944-973`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/withdrawals.rs#L944-L973)).
+    The member sends concurrent requests for one committed `W` at
+    consecutive seqs. By the same logic k requests reach the enclave and are
+    each debited, so one `W` can drain the bucket. This is inferred from the
+    code; the Rust test covers k = 2.
+  - **Why:** no BTC is gained. The member drains tokens and stalls
+    withdrawals for about 5 minutes per committed `W`, and can repeat this
+    for each new `W`. A competing bridge, a holder of a short position on
+    hBTC, or an extortionist gains from sustained delays.
+  - **Detection:** honest signers log the caller of each request
+    ([`bridge_service.rs:184-185`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/grpc/bridge_service.rs#L184-L185)),
+    and the proxy logs a wid at two seqs
+    ([`widlog.rs:104-110`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi-guardian-proxy/src/node/widlog.rs#L104-L110)).
+    Governance (2/3) can then exclude the member with `IgnoreMember`, which
+    takes effect at the next committee.
+  - **In scope:** yes. `PROTOCOL.md` 1 admits Byzantine members below the
+    security threshold and lists the non-atomic proxy lookup; 12 #5 records
+    the double sign.
 - **Tests:** branch [`mlogan-f2-guardian-double-sign-test`](https://github.com/mystenmark/hashi/tree/mlogan-f2-guardian-double-sign-test) (commit
   [`f15cf122`](https://github.com/mystenmark/hashi/commit/f15cf1227a66011167bbe8f3145d668dcf2d72f1)):
   - [`crates/hashi-guardian/src/withdraw_mode/standard_withdrawal.rs`](https://github.com/mystenmark/hashi/blob/f15cf1227a66011167bbe8f3145d668dcf2d72f1/crates/hashi-guardian/src/withdraw_mode/standard_withdrawal.rs):
@@ -103,6 +160,8 @@ checked), **review-confirmed** (reviewers traced it in code; no model yet),
   3. The proxy looks the wid up, misses for both, and forwards both. Lookup
      and forward are not atomic ([`hashi-guardian-proxy/src/node/cache.rs:153-185`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi-guardian-proxy/src/node/cache.rs#L153-L185)).
   4. The enclave has no wid dedup. It signs at `n`, then at `n + 1`.
+  One Byzantine member can skip step 1 and send the concurrent requests
+  directly (see the threat model).
 - **Consequence:** the limiter is debited twice for one transaction. The
   surplus `seq` leaves node mirrors and the Guardian out of step until the
   next reconcile, which stalls withdrawals for about 5 minutes.
@@ -112,6 +171,28 @@ checked), **review-confirmed** (reviewers traced it in code; no model yet),
 ### F3. The rate-limit bound must include the past timestamp window
 
 - **Status:** model-confirmed. Severity: documentation of the security bound.
+- **Threat model:**
+  - **Who:** the full `window + 2100 s` bound matters only against a
+    coalition that holds the certificate threshold (2/3 weight) of the
+    Guardian's current committee and enough MPC shares to sign. A past
+    committee qualifies while the Guardian still follows it (F9). The
+    coalition chooses `ts` up to 1800 s old and moves about
+    `rate * 1800 s` more BTC than the future-only bound allows.
+  - **Why:** theft. The coalition has already compromised the committee, so
+    the finding only enlarges what it can take before operators react.
+    Pause does not stop Guardian signing (F8), so this margin adds to the
+    loss from any detection delay.
+  - **Honest 2/3:** one member, the current leader, or a node whose
+    fullnode lags can shift `ts` within 600 s of the signers' checkpoint
+    views. Every `W` is still one that honest members approved, so only
+    pacing changes.
+  - **In scope:** yes. The general safety assumption excludes a 2/3
+    coalition (`PROTOCOL.md` 11), but the Guardian exists for exactly that
+    case ([`guardian.mdx:5`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/design/docs/guardian.mdx?plain=1#L5)),
+    and the enclave's `ts` checks name it
+    ([`standard_withdrawal.rs:97-108`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi-guardian/src/withdraw_mode/standard_withdrawal.rs#L97-L108)).
+    Operators who size `max` and `rate` from the documented bound
+    underestimate this outflow.
 - **Model:** [`GuardianLimiter.tla`](GuardianLimiter.tla), config [`GuardianLimiterFutureOnly.cfg`](GuardianLimiterFutureOnly.cfg)
   (fails) and [`GuardianLimiter.cfg`](GuardianLimiter.cfg), [`GuardianLimiterRateWide.cfg`](GuardianLimiterRateWide.cfg) (pass).
 - **Mechanism:** the enclave accepts `ts` in `[now - 1800 s, now + 300 s]`
@@ -131,6 +212,28 @@ checked), **review-confirmed** (reviewers traced it in code; no model yet),
 - **Status:** model-confirmed for the abstract mechanism; downgraded to a
   hardening suggestion after code review. Severity if triggered: key-share
   leak for one node.
+- **Threat model:**
+  - **Who causes it:** no adversary is needed. The cause is a release that
+    changes batch sizing or the index-to-presignature map
+    (`BATCH_SIZE_PER_WEIGHT`, admission rules, sighash construction, delta
+    derivation), shipped by code authors without gating on an activation
+    epoch, and installed by validator operators with a restart in the
+    middle of an epoch after their nodes have signed. Both steps look
+    routine. Admission rules have changed in past releases. An operator
+    cannot trigger it through config: the override is allowed only on
+    regtest ([`lib.rs:1589-1595`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/lib.rs#L1589-L1595)).
+  - **Who exploits it:** any committee member can ask any follower to sign
+    any Pending slot (`PROTOCOL.md` 8.4). A Byzantine member can therefore
+    collect both partial signatures from each node that upgraded, and one
+    release leaks the share of every node that restarted. If the leaked
+    shares plus a coalition's own shares reach `t`, the coalition holds the
+    MPC key and can spend through the recovery leaf (F7). The motive is
+    theft.
+  - **Malicious code author:** this actor can exfiltrate shares directly,
+    so F4 gives it nothing new.
+  - **In scope:** yes. `PROTOCOL.md` 8.5 names this residual case, and 11
+    Safety 15 lists the map's injectivity as a model assumption. No
+    document limits mid-epoch releases.
 - **Model:** [`Presig.tla`](Presig.tla), config [`PresigCodeChange.cfg`](PresigCodeChange.cfg) (fails);
   [`Presig.cfg`](Presig.cfg) (passes, 107.5M states) with the map fixed.
 - **Mechanism:** a node maps a global presig index to a local position by
@@ -140,8 +243,8 @@ checked), **review-confirmed** (reviewers traced it in code; no model yet),
   installed batch below an index the node already signed, a still-Pending
   index can resolve to the used position and sign a second request.
 - **Why it is unlikely:** `BATCH_SIZE_PER_WEIGHT` has been 10 since it was
-  introduced ([`cc3845c6`](https://github.com/MystenLabs/hashi/commit/cc3845c6)), and its override is rejected on mainnet and
-  testnet ([`lib.rs:740-749`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/lib.rs#L740-L749)). The reviewer's digest-mismatch precondition is
+  introduced ([`cc3845c6`](https://github.com/MystenLabs/hashi/commit/cc3845c6)), and its override is allowed only on regtest
+  ([`lib.rs:1589-1595`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/lib.rs#L1589-L1595), called from [`lib.rs:740-749`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/lib.rs#L740-L749)). The reviewer's digest-mismatch precondition is
   largely closed: batches with node-local skips are discarded
   ([`service.rs:831-837`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/mpc/service.rs#L831-L837)), sizes are checked against admitted weight
   ([`service.rs:856-860`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/mpc/service.rs#L856-L860)), and batches install contiguously. The admission
@@ -176,6 +279,53 @@ described there.
   or past with retained key material) can spend idle pool funds without the
   Guardian or the rate limiter; unrelated users' withdrawals are stranded
   afterwards.
+- **Threat model:**
+  - **Cause: who can spend through the recovery leaf.** The spender must
+    hold the MPC secret, and shares with weight `t` reconstruct it. With the
+    default `mpc_max_faulty_in_basis_points = 3333`, `t = W - 2f` is about
+    34% of reduced weight, not the 2/3 certificate threshold
+    ([`mpc_except_signing.rs:6655-6658`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/mpc/mpc_except_signing.rs#L6655-L6658)).
+    No node code builds the spend, so spenders need their own tool to
+    export shares and sign the script path.
+    - *Current members with weight `t` who collude, or an attacker who
+      compromises their nodes.* The motive is theft of every pool UTXO older
+      than 60 days, with no limiter and no onchain step first. The Guardian
+      exists to stop this actor
+      ([`guardian.mdx:4-5`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/design/docs/guardian.mdx?plain=1#L4-L5)).
+    - *Past members with weight `t` of their own epoch who kept key
+      material.* Rotation reshares from `previousThreshold` share indices
+      (`PROTOCOL.md` 8.2), so the threshold is that epoch's reduced `t`.
+      Validators that have left the committee have no stake or fees at risk
+      in Hashi. This is the actor in the Guardian's stated purpose
+      ([`guardian.mdx:41`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/design/docs/guardian.mdx?plain=1#L41)).
+      The only defence is the erasure schedule, and
+      [`node-backup.mdx:272`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/design/docs/node-backup.mdx?plain=1#L272)
+      tells operators to keep longer-term copies.
+    - *Attackers who steal key material from weight `t` of one past epoch.*
+      Archives are PGP-encrypted to each operator's key, so the thief needs
+      the archive and that key, or the database of a decommissioned host.
+      No document addresses this actor.
+    - *The current committee acting in good faith.* The recovery leaf is the
+      documented escape hatch if the Guardian key is lost
+      ([`address-scheme.mdx:51-55`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/design/docs/address-scheme.mdx?plain=1#L51-L55)),
+      and a committee could also use it after a Guardian halt (F10, F12).
+      This needs no adversary and still leads to the aftermath.
+  - **Aftermath: who strands withdrawals.** After any spend of a pool output
+    outside a `W`, no adversary is needed: coin selection picks the stale
+    record and strands the users batched with it. Other causes of the
+    precondition:
+    - *A depositor working with Bitcoin miners who can reorg more than
+      `bitcoin_confirmation_threshold` blocks (default 6).* The motive is to
+      double-spend the deposit and keep the minted hBTC. `PROTOCOL.md` 1
+      excludes reorgs this deep.
+    - *Governance (2/3) lowering the confirmation threshold to speed up
+      deposits.* A shallow reorg then suffices. The change looks routine and
+      no document excludes it.
+  - **In scope:** `PROTOCOL.md` 1 excludes the current-committee actor only
+    below the security threshold, and 11 leaves recovery-leaf spends out of
+    every safety property. The docs name the recovery leaf
+    ([`guardian.mdx:44-46`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/design/docs/guardian.mdx?plain=1#L44-L46))
+    but do not say that it removes the Guardian for all idle funds.
 - **Model:** [`Bridge.tla`](Bridge.tla) via [`MC_Bridge.tla`](MC_Bridge.tla). [`BridgeRecovery.cfg`](BridgeRecovery.cfg)
   (`RecordSound` fails), [`BridgeRecoveryBacking.cfg`](BridgeRecoveryBacking.cfg) (`Backing` fails), and
   [`BridgeLiveRecovery.cfg`](BridgeLiveRecovery.cfg) (`WithdrawalCompletes` fails) show the effect of a
@@ -215,7 +365,8 @@ described there.
 against malicious past committees" ([`design/docs/guardian.mdx`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/design/docs/guardian.mdx)). For any
 UTXO older than 60 days that protection is gone:
 
-- **Current committee.** Members holding threshold weight who collude, or
+- **Current committee.** Members holding the MPC threshold `t` (about 34%
+  of reduced weight by default, see the threat model) who collude, or
   whose nodes are compromised, can spend it directly on Bitcoin. This is
   the committee compromise the Guardian is meant to stop.
 - **Past committees.** With the erasure policy followed, old material is
@@ -313,14 +464,38 @@ other inputs, remove `C`, and re-mint or refund `R`'s hBTC. Treat
   carries across committees, for example a key that only the current
   committee holds, or a much longer delay.
 
-**Open questions.** Is a past committee's threshold the reduced-weight `t`
-of that epoch? How large does the pool's share of UTXOs older than 60 days
+**Open questions.** (Answered: a past committee's threshold is the
+reduced-weight `t` of that epoch, because rotation reshares from
+`previousThreshold` share indices.) How large does the pool's share of UTXOs older than 60 days
 get in practice? Should the backup doc's advice to keep longer-term copies
 exclude key material older than the erasure window?
 
 ### F8. Pause does not stop Bitcoin outflow of a committed withdrawal
 
 - **Status:** model-confirmed consequence of review finding R2.
+- **Threat model:**
+  - **One Byzantine committee member** of the current or pending committee,
+    running modified node software. It asks followers for MPC signatures
+    and a Guardian-request certificate, which follower handlers grant with
+    no pause check
+    ([`bridge_service.rs:180-199`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/grpc/bridge_service.rs#L180-L199)),
+    sends the certificate to the proxy, and broadcasts. It cannot change
+    destinations: followers sign only the onchain `W`, and the limiter
+    still applies.
+  - **Why:** governance pauses because something looks wrong, and the
+    committed `W` may be the problem, for example a withdrawal of hBTC
+    minted through a deposit bug. Its beneficiary gains the BTC by bribing
+    or compromising one member. An operator may also judge the pause a
+    false alarm and push through withdrawals whose hBTC users already
+    burned; that looks like serving users.
+  - **No actor needed** when the signatures already exist. Anyone can
+    rebuild a `W` finalized before the pause from onchain data, and the
+    transaction may already be in mempools.
+  - **In scope:** yes. `PROTOCOL.md` 1 admits one Byzantine member, and 12
+    #18 records this behaviour.
+    [`governance-actions.mdx:127-130`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/design/docs/governance-actions.mdx?plain=1#L127-L130)
+    says a pause stops signing and finalization, which holds only for the
+    onchain steps.
 - **Model:** [`Bridge.tla`](Bridge.tla), config [`BridgePausedBroadcast.cfg`](BridgePausedBroadcast.cfg) (action
   property `PausedNoWithdrawalBroadcast` fails).
 - **Trace:** a withdrawal is committed; governance pauses; MPC signing and
@@ -330,12 +505,43 @@ exclude key material older than the erasure window?
   review ([`withdrawals.rs:70-101`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/withdrawals.rs#L70-L101), [`956-976`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/withdrawals.rs#L956-L976), [`1403-1500`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/withdrawals.rs#L1403-L1500); the Guardian has no
   pause input). The trace shows the consequence, not new evidence for the
   premise. An honest leader stops all work while paused, so this needs one
-  Byzantine committee member to drive signing.
+  Byzantine committee member to drive signing when the signatures do not
+  yet exist. For a `W` already finalized before the pause, anyone can
+  broadcast it.
 
 ### F9. The Guardian can stay on an old committee for a whole Hashi epoch
 
 - **Status:** reproduced in Rust tests (review finding R8). Severity:
   liveness of withdrawal signing.
+- **Threat model:**
+  - **No adversary needed.** Two things must coincide: the Guardian
+    endpoint answers `GetGuardianInfo` as a session that is not yet
+    activated, and a Hashi reconfiguration completes in that window. Every
+    enclave reports no committee until activation, including one freshly
+    booted
+    ([`enclave.rs:323-329`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi-guardian/src/enclave.rs#L323-L329)).
+    Routine triggers are an in-place restart after a crash or deploy, and a
+    failover that points the proxy's `GUARDIAN_BACKEND_URL` at the standby
+    before activation. The window runs from boot to activation: at least
+    the 10-minute quiet period, and hours if key provisioners must act.
+    Hashi reconfigures about once a day, so the chance per restart is about
+    (window length) / 24 h, provided the window also outlasts one leader
+    rotation (100 checkpoints per member).
+  - **Guardian host or proxy operator:** either can stop the enclave before
+    the predictable epoch boundary and serve a fresh, unprovisioned enclave
+    at the backend address for one rotation. That needs no key
+    provisioners. The motive: stopping the Guardian halts withdrawals only
+    while it stays stopped, but F9 extends the halt for up to a day after
+    it returns, and the halt looks like an outage. That supports extortion
+    or a short position on hBTC with deniability.
+  - **Committee members cannot cause it.** A Byzantine leader controls only
+    its own gate.
+  - **In scope:** `PROTOCOL.md` 1 allows the Guardian to crash and allows
+    several sessions, so the routine trigger is in scope. The host is not
+    listed as an actor.
+  - **Recovery:** the next Hashi epoch, or any single committee operator
+    restarting its node, because the gate is held in memory
+    ([`leader/mod.rs:234`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/leader/mod.rs#L234)).
 - **Tests:** branch [`mlogan-f9-guardian-reconcile-gate-test`](https://github.com/mystenmark/hashi/tree/mlogan-f9-guardian-reconcile-gate-test) (commit
   [`774b87d3`](https://github.com/mystenmark/hashi/commit/774b87d3b8897338367fbb3344f8ae8d31fbf464)), [`crates/hashi/src/leader/guardian.rs`](https://github.com/mystenmark/hashi/blob/774b87d3b8897338367fbb3344f8ae8d31fbf464/crates/hashi/src/leader/guardian.rs):
   `no_committee_reply_holds_the_epoch_gate_while_guardian_is_behind` and the
@@ -346,8 +552,8 @@ exclude key material older than the erasure window?
   reply the gate clears and the next check retries. Gap: the gate-clearing
   arm sits inline in `run()`'s `select!`; the test copies its logic in a
   helper.
-- **When the Guardian reports no committee:** a standby
-  (ProvisionerInitialized, not Activated) returns `Ok` with no committee
+- **When the Guardian reports no committee:** every enclave that is not yet
+  activated, from a fresh boot through ProvisionerInitialized, returns `Ok` with no committee
   epoch ([`hashi-guardian/src/enclave.rs:614`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi-guardian/src/enclave.rs#L614)). A failing or unreachable
   Guardian yields `Err`, which clears the gate. The proxy caches successful
   info replies, including no-committee ones, for 30 s
@@ -364,7 +570,8 @@ exclude key material older than the erasure window?
   reconcile, because a failed reconcile is retried every tick.
 - **Bridge consequence:** [`BridgeReconfig.tla`](BridgeReconfig.tla) composes `Bridge` with
   `Reconfig`. In [`BridgeReconfigLive.cfg`](BridgeReconfigLive.cfg), `WithdrawalCompletes` fails: the
-  Guardian is down while Hashi moves from epoch 0 to 2, the leader sets its
+  Guardian is not activated (it answers with no committee) while Hashi
+  moves from epoch 0 to 2, the leader sets its
   gate at epoch 2, the Guardian comes back on committee 0, and a withdrawal
   committed and MPC-signed at epoch 2 never gets a Guardian signature. An
   honest leader commits no new `W` while one is unsigned (R4), so all
@@ -382,7 +589,9 @@ exclude key material older than the erasure window?
   Guardian does, `reconcile_guardian_committee` returns `Ok` ([`:263-266`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/leader/guardian.rs#L263-L266)),
   and the leader keeps its per-epoch gate set ([`leader/mod.rs:452-458`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/leader/mod.rs#L452-L458) only
   clears it on error).
-- **Trace:** the Guardian is down; a reconfiguration completes; every node
+- **Trace:** the Guardian is up but not activated, so it reports no
+  committee (a Guardian that is down returns an error, which clears the
+  gate); a reconfiguration completes; every node
   takes a leader turn and sets its gate; the Guardian comes back on the old
   committee. Nothing retries until the next Hashi epoch or a node restart.
   Until then the Guardian rejects certificates from the new committee
@@ -393,6 +602,33 @@ exclude key material older than the erasure window?
 ### F10. Without the proxy gate the Guardian adopts an aborted committee
 
 - **Status:** model-confirmed (review finding R1). The proxy gate closes it.
+- **Threat model:** each path needs someone who holds a handoff certificate
+  to the pending committee and a way to reach the enclave without passing
+  the gate.
+  - **Certificate holders:** any one outgoing member can collect the
+    certificate while the reconfiguration is pending, because honest
+    members sign for any caller from the outgoing committee. Anyone a
+    member gives it to also holds it.
+  - **Path 1, the Guardian operator or host:** the enclave serves every RPC
+    on one port
+    ([`main.rs:55-61`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi-guardian/src/main.rs#L55-L61)),
+    and operator RPCs reach it without the proxy. Causes: operator error
+    (pushing a pending handoff by hand to update a Guardian that is behind,
+    F9, during a reconfiguration that later aborts), a compromised host, or
+    malice. The result halts all Guardian-signed withdrawals with no
+    recovery inside the protocol, because a new session adopts the same
+    committee from S3. A short seller, a competing bridge, or an
+    extortionist gains from that.
+  - **Path 2, the operator of the proxy's fullnode plus one Byzantine
+    member:** a false read makes the proxy store the handoff for the rest
+    of its run
+    ([`handoffs.rs:135-137`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi-guardian-proxy/src/node/handoffs.rs#L135-L137)),
+    and the Byzantine member sends the certificate, since honest leaders
+    push only handoffs stored in their own view.
+  - **In scope:** `guardian.mdx` and `PROTOCOL.md` 1 assume the fullnode is
+    correct and that nodes cannot reach the enclave, so both paths fall
+    outside the documented model. No document says whether the Guardian
+    operator and host are trusted.
 - **Model:** [`Reconfig.tla`](Reconfig.tla), config [`ReconfigNoGate.cfg`](ReconfigNoGate.cfg)
   (`GuardianCompleted` fails); [`Reconfig.cfg`](Reconfig.cfg) passes with the gate.
 - **Mechanism:** honest outgoing members sign a handoff to whatever
@@ -408,6 +644,24 @@ exclude key material older than the erasure window?
 ### F11. Reconfiguration driver: no unclassified aborts, and bounded start retries
 
 - **Status:** closed for safety; liveness gap confirmed as by design.
+- **Threat model:**
+  - **Safety part:** the only adversary is one Byzantine member sending bad
+    completion or handoff signatures; per-signature verification closes it.
+  - **Liveness gap (R9), no adversary needed:** a common dependency fails
+    for about 20 s after a Sui epoch change (3 attempts 10 s apart,
+    [`service.rs:1845-1870`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/mpc/service.rs#L1845-L1870)):
+    a shared fullnode or RPC provider outage, gas exhaustion, or Sui
+    congestion. Governance clearing `reconfig_hold` is a routine step that
+    starts nothing.
+  - **Deliberate:** a network attacker would have to cut every honest node
+    off from Sui for that window. The gain is small: the bridge keeps
+    running under the last committee, and the change is delayed by at most
+    one Sui epoch (for example, to keep a seat about to be lost).
+  - **Recovery:** anyone can call `start_reconfig`, which has no sender
+    check
+    ([`reconfig.move:85`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/packages/hashi/sources/core/reconfig.move#L85)).
+  - **In scope:** accepted by design (`PROTOCOL.md` 2.3, 11 Liveness 5;
+    `reconfiguration.mdx`).
 - **Model:** [`Reconfig.tla`](Reconfig.tla). [`Reconfig.cfg`](Reconfig.cfg) passes `NoPanic`,
   `PendingWindow`, `CompleteXorAbort`, `NoEpochReuse`, `HandoffChain`,
   `GuardianCompleted`, `GuardianNotAhead`, and `HashiMonotone` with
@@ -427,7 +681,42 @@ exclude key material older than the erasure window?
 ### F12. Lowering the Guardian's max capacity can halt all withdrawals
 
 - **Status:** reproduced in Rust tests. Severity: liveness of all
-  withdrawals. Recovery requires another operator rotation.
+  withdrawals. Recovery requires another rotation by the operator and a
+  threshold of key provisioners. The sample config already warns about
+  this hazard (see the threat model).
+- **Threat model:**
+  - **Who can lower `max`:** the Guardian operator and a threshold of key
+    provisioners together. The operator puts `limiter_config` in
+    `InitConfig`
+    ([`operator_provision.rs:156`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi-guardian-init/src/operator_provision.rs#L156)).
+    Each provisioner checks it against its own local config and signs
+    `config_hash`
+    ([`kp_provision.rs:288-291`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi-guardian-init/src/kp_provision.rs#L288-L291)),
+    which the enclave requires
+    ([`provisioner_init.rs:177`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi-guardian/src/withdraw_mode/provisioner_init.rs#L177)).
+    Nothing compares the new `max` with the previous session or with
+    committed `W`s. The host, proxy operator, and committee cannot change it.
+  - **Likely cause, honest operations:** incident response to a suspected
+    committee compromise (the case the Guardian exists for: lowering `max`
+    caps loss per window); a policy change after TVL falls; or a typo,
+    since `max_bucket_capacity` is in sats and provisioners checking the
+    same YAML confirm the same wrong value. The sample config advises
+    "pause the bridge first"
+    ([`guardian-init.sample.yaml:100-101`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi-guardian-init/guardian-init.sample.yaml#L100-L101)),
+    which does not help: a `W` committed before the pause still exceeds the
+    new `max` after unpause.
+  - **Malicious use:** the operator with a threshold of provisioners, or a
+    machine that controls the operator and the shared config, can halt
+    withdrawals until another rotation, for ransom or a short position on
+    hBTC. Unlike stopping the enclave, the halt survives Guardian restarts.
+    During incident response a user can submit a withdrawal near the old
+    `max` to make a large unsigned `W` likely.
+  - **In scope:** `PROTOCOL.md` 1 does not list the operator or the
+    provisioners, and assumes only that enclave code is correct; the
+    finding is an operational hazard.
+  - **Recovery:** the operator and a threshold of provisioners activate a
+    session whose `max` covers `W`, after the 10-minute quiet period, or
+    governance (2/3) upgrades the package to add a cancel path.
 - **Tests:** branch [`mlogan-f12-guardian-max-lowering-test`](https://github.com/mystenmark/hashi/tree/mlogan-f12-guardian-max-lowering-test)
   (commit [`9ea9a9dc`](https://github.com/mystenmark/hashi/commit/9ea9a9dc96bfc71eb207aad29b889e526214f4cb)):
   - [`crates/hashi-guardian/src/withdraw_mode/operator_activate.rs`](https://github.com/mystenmark/hashi/blob/9ea9a9dc96bfc71eb207aad29b889e526214f4cb/crates/hashi-guardian/src/withdraw_mode/operator_activate.rs):
@@ -461,7 +750,8 @@ exclude key material older than the erasure window?
   `SignableByGuardian`. [`BridgeLimiterRotateStuck.cfg`](BridgeLimiterRotateStuck.cfg) passes
   `StuckIsPermanent` and `StuckBlocksCommits`.
 - **Trace:** two requests are approved and batched into `W1` with outflow 2
-  under max 2. An operator rotation starts a Guardian session with max 1.
+  under max 2. A rotation by the operator and key provisioners starts a Guardian session
+  with max 1.
   The Guardian refuses `W1` on every attempt, so `W1` is never fully signed.
   No other withdrawal is committed while `W1` is unsigned.
 - **Code facts:**
@@ -498,6 +788,32 @@ exclude key material older than the erasure window?
 - **Status:** model-confirmed as a boundary; the host capability needs
   confirmation. Severity: limiter bound (safety 18, 19) under a malicious
   host; at most one record per session handover.
+- **Threat model:**
+  - **Who:** the host operator of the Guardian's parent EC2 instance, or
+    anyone with root on it. In the shipped deployment this is the Guardian
+    operator, who runs the VSOCK proxy units
+    ([`guardian.sh:12`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/operator/scripts/guardian.sh#L12)).
+    An on-path network attacker between the host and S3 has the same
+    capability. The host can also start the handover: it holds the PUT
+    until the old enclave panics, which gives the operator and provisioners
+    a reasonable cause to activate a replacement.
+  - **What it gains:** alone, the host breaks the single log chain
+    (safety 19), which serves sabotage or extortion. Extra BTC outflow also
+    needs the new session to sign a different `W` at the colliding seq,
+    which needs a Byzantine committee member or a leader race; a held
+    record for the same `W` in the same hour collides on its key. A thief
+    who also controls the committee and MPC gains at most one record (at
+    most `max`) per handover.
+  - **Without an adversary:** a short host-to-S3 partition across an
+    activation may deliver a request the kernel had already buffered
+    (unconfirmed). The enclave image runs no time sync
+    ([`run.sh`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/docker/hashi-guardian/run.sh)),
+    so drift between a long-running writer and a fresh reader may exceed
+    the 1-minute budget. The R12 paths (skew above about 1 h) appear to need
+    a platform fault, since no path lets the host set the enclave clock.
+  - **In scope:** not excluded. README line 5 distrusts only the bucket
+    operator; assumption 4 covers S3, not the host or the network;
+    `PROTOCOL.md` 1 has no row for the host.
 - **Model:** [`GuardianSessions.tla`](GuardianSessions.tla) (time in minutes, Q = 10, budget 1,
   attempt timeout 5). Session `a` is active at time 0; `b` may initialise
   and activate later. Results:
@@ -552,7 +868,8 @@ exclude key material older than the erasure window?
 - **Consequence:** the late record is durable, so the proxy can replay its
   signatures. The new session recovered its limiter without that debit,
   so outflow can exceed the rate bound by that record's amount (at most
-  `max`). Two records share a seq. The object key is
+  `max`), if the new session also signs a different `W` at that seq (see
+  the threat model). Two records share a seq. The object key is
   `<hour>/<seq>-wid<wid>.json`
   ([`withdrawal.rs:35-46`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi-types/src/guardian/s3/log_messages/withdrawal.rs#L35-L46)),
   so `If-None-Match` stops a second write only for the same seq, wid, and
