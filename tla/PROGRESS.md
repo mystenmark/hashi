@@ -129,6 +129,10 @@
 
 ## Done in this pass
 
+- Reconfiguration end to end: `EventuallyCanComplete => HashiCatchesUp`
+  and `=> GuardianCatchesUp` (F9 fix) pass with key generation allowed to
+  fail; table in FINDINGS.md.
+
 - Deposits end to end: `DepositMinted` holds with refiling, with
   reconfiguration; fails without refiling and with the pause loop. Table
   in FINDINGS.md.
