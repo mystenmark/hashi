@@ -66,8 +66,26 @@ checked), **review-confirmed** (reviewers traced it in code; no model yet),
 
 ### F2. A withdrawal can be signed twice by the Guardian, debiting the limiter twice
 
-- **Status:** model-confirmed. Severity: limiter accounting and liveness. No
-  extra BTC moves, because both signatures cover the same transaction.
+- **Status:** reproduced in Rust tests. Severity: limiter accounting and
+  liveness. No extra BTC moves, because both signatures cover the same
+  transaction.
+- **Tests:** branch `mlogan-f2-guardian-double-sign-test` (commit
+  `f15cf122`):
+  - `crates/hashi-guardian/src/withdraw_mode/standard_withdrawal.rs`:
+    `same_wid_at_consecutive_seqs_is_signed_and_debited_twice`. Two
+    certified requests for one wid at seq 0 and 1 both succeed;
+    `next_seq = 2`, tokens are debited twice, and two withdraw records are
+    written.
+  - `crates/hashi-guardian-proxy/src/node/cache.rs`:
+    `concurrent_same_wid_at_consecutive_seqs_are_both_forwarded`. A barrier
+    in the stub enclave releases only if both concurrent requests are
+    forwarded; it releases, so the proxy does not serialise per wid.
+- **Checked and not preventing it:** the enclave's single control lock
+  orders requests but does not dedup; committee members certify a
+  `StandardWithdrawalRequest` at any seq (`withdrawals.rs:956`); leader
+  pacing state is per leader (`guardian_limiter.rs:196-241`); the stall
+  reconcile fires only after about 5 minutes
+  (`guardian_limiter.rs:244-285`).
 - **Model:** `GuardianLimiter.tla` via `MC_GuardianLimiter.tla`, configs
   `GuardianLimiterDedup.cfg` and `GuardianLimiterDedupSeed.cfg`. Invariant
   `NoDoubleConsume`.
