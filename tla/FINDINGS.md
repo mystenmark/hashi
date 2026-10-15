@@ -424,6 +424,48 @@ exclude key material older than the erasure window?
   `reconfig_hold` likewise triggers nothing; `design/docs/reconfiguration.mdx`
   documents this. The delay is at most one Sui epoch.
 
+### F12. Lowering the Guardian's max capacity can halt all withdrawals
+
+- **Status:** model-confirmed; code facts checked by a sub-agent. Severity:
+  liveness of all withdrawals. Recovery requires another operator rotation.
+- **Model:** `BridgeLimiter.tla` composes `Bridge` with `GuardianLimiter`.
+  `BridgeLimiter.cfg` (no rotation) passes all safety, including
+  `SignableByGuardian`. `BridgeLimiterRotate.cfg` violates
+  `SignableByGuardian`. `BridgeLimiterRotateStuck.cfg` passes
+  `StuckIsPermanent` and `StuckBlocksCommits`.
+- **Trace:** two requests are approved and batched into `W1` with outflow 2
+  under max 2. An operator rotation starts a Guardian session with max 1.
+  The Guardian refuses `W1` on every attempt, so `W1` is never fully signed.
+  No other withdrawal is committed while `W1` is unsigned.
+- **Code facts:**
+  - The limiter config is fixed per Guardian session, and a new session may
+    set a different max or rate. Activation takes the new session's config;
+    nothing compares it with the previous one (`operator_activate.rs:36`).
+    Recovery caps tokens to the new max (`limiter_recovery.rs:44-85`,
+    `limiter.rs:46-49`). Nodes adopt the new config within about 15 s
+    (`guardian_limiter.rs:157-166`, `lib.rs:1238`).
+  - The commit check compares outflow with the max at commit time
+    (`withdrawals.rs:781-786`). A `W` committed before the change is not
+    re-checked.
+  - The Guardian refuses an amount above its capacity with
+    `RateLimitExceeded` and consumes no seq (`limiter.rs:94-117`). The leader
+    retries forever and never drops or marks `W`
+    (`withdrawal_transactions.rs:427-441`, `leader/guardian.rs:83-104`).
+  - No Move path cancels, unlocks, or replaces a committed `W`. Archive
+    requires confirmation (`withdrawal_queue.move:620,685`).
+    `remove_withdrawal_txn` (`withdrawal_queue.move:539`) has no callers.
+  - The leader commits nothing while any `W` is not fully signed, with no
+    timeout (`onchain/mod.rs:871-879`, `withdrawal_request_flow.rs:412-415`).
+  - The Guardian has no other signing mode (`withdraw_mode/mod.rs:9-13`).
+- **Why it matters:** lowering the max is a plausible response to an
+  incident. If any committed withdrawal exceeds the new max, the bridge stops
+  all withdrawals until an operator rotates again with a max at least as
+  large as that withdrawal.
+- **Fix directions:** refuse to activate a session whose max is below the
+  outflow of any committed, unsigned `W`; or let the leader skip a `W` that
+  exceeds the Guardian's max and add an on-chain path to unlock its inputs
+  and restore its requests.
+
 ## Review findings not yet modelled
 
 These come from the sub-agent code review (`PROTOCOL.md` section 12). They
@@ -431,11 +473,11 @@ are review-confirmed unless marked otherwise.
 
 | # | Finding | Where to model |
 |---|---|---|
-| R3 | The Guardian-request certificate is signed after checking only `W` exists and the timestamp. The limiter check happens later, at finalize, after the Guardian has consumed tokens. | `GuardianLimiter` (partly modelled) |
-| R4 | "One unsigned `W` at a time" is enforced only off chain. Concurrent leaders can commit several. A `W` that never becomes fully signed blocks all later commits by honest leaders. | `Bridge` |
+| R3 | The Guardian-request certificate is signed after checking only `W` exists and the timestamp. The limiter check happens later, at finalize, after the Guardian has consumed tokens. | Composed in `BridgeLimiter`: `GsigLogged` and `FinalizedLogged` hold. A finalize refused by follower mirrors is retried; the proxy replays the logged signatures, so tokens are not debited again, and mirrors are snapped after about 5 minutes (`cache.rs:161-170`, `guardian_limiter.rs:244-283`). Liveness was not model-checked, because the limiter clock is bounded. |
+| R4 | "One unsigned `W` at a time" is enforced only off chain. Concurrent leaders can commit several. A `W` that never becomes fully signed blocks all later commits by honest leaders. | Modelled. Consequences in F9 (`BridgeReconfigLive.cfg`) and F12 (`BridgeLimiterRotateStuck.cfg`). |
 | R7 | Change outputs are not validated on chain (address, amount, txid). Relies on an honest 2/3. | `Bridge` |
 | R10 | A member with 5% weight can pause alone; more than 1/3 can block unpause. | `Reconfig` / governance |
-| R11 | Limiter config is per Guardian session; activation only caps tokens. A rotation can raise `max` or `rate`. | Guardian sessions |
+| R11 | Limiter config is per Guardian session; activation only caps tokens. A rotation can raise `max` or `rate`. | Lowering is modelled as F12. Raising `max` or `rate` loosens the rate bound and is a policy question for the operator. |
 | R12 | Limiter recovery at activation reads only two hour directories. Writer-ahead clock skew above about 1 hour can roll back `seq` and tokens or allow a second activation. | Guardian sessions |
 | R13 | Proxy replay data is kept 30 days; a retry after that consumes tokens again. | Guardian sessions |
 | R14 | Repeated reconfigurations re-approve deposits and restart the delay, which can starve confirmation. | Analysed, not a separate issue. Only a completed reconfiguration triggers re-approval; an abort keeps the epoch, so stored certs stay valid (`leader/deposits.rs:64-76`, `deposit.move:159-161`). Completions happen at most once per Sui epoch (about 24 h) and the delay is 10 min, so starvation needs a reconfiguration pending most of each epoch. That is the bridge stall of PROTOCOL.md 2.4 (for example F1), in which unconfirmed requests also expire after 24 h and must be resubmitted. `BridgeReconfigLiveFix.cfg` checks `DepositCompletes` with re-approval across epochs. |
