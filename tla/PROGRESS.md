@@ -129,6 +129,10 @@
 
 ## Done in this pass
 
+- Guardian link: `GuardianSigns => RequestPaid` in Bridge without Guardian
+  fairness; `ReadyConsumed` in `GuardianLimiterSeq`; `ReadyIsMpcRec` in
+  `BridgeLimiter`. End-to-end table in FINDINGS.md.
+
 - End-to-end `RequestPaid` holds in `Bridge` and in `BridgeReconfig` with
   the F9 fix; fails without it. Chain of supporting lemmas is listed in
   the session notes; remaining links: Guardian composition into Bridge
