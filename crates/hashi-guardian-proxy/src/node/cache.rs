@@ -228,6 +228,8 @@ mod tests {
         info: Option<proto::GetGuardianInfoResponse>,
         info_calls: Arc<AtomicUsize>,
         info_delay: Duration,
+        /// When set, each forwarded withdrawal waits here before it returns.
+        withdrawal_barrier: Option<Arc<tokio::sync::Barrier>>,
     }
 
     impl StubGuardian {
@@ -240,6 +242,7 @@ mod tests {
                     info: None,
                     info_calls: Arc::default(),
                     info_delay: Duration::ZERO,
+                    withdrawal_barrier: None,
                 },
                 call_count,
             )
@@ -254,6 +257,7 @@ mod tests {
                     info: None,
                     info_calls: Arc::default(),
                     info_delay: Duration::ZERO,
+                    withdrawal_barrier: None,
                 },
                 call_count,
             )
@@ -266,6 +270,11 @@ mod tests {
 
         fn with_info_delay(mut self, delay: Duration) -> Self {
             self.info_delay = delay;
+            self
+        }
+
+        fn with_withdrawal_barrier(mut self, barrier: Arc<tokio::sync::Barrier>) -> Self {
+            self.withdrawal_barrier = Some(barrier);
             self
         }
     }
@@ -331,6 +340,9 @@ mod tests {
             _: Request<proto::SignedStandardWithdrawalRequest>,
         ) -> Result<Response<proto::SignedStandardWithdrawalResponse>, Status> {
             self.call_count.fetch_add(1, Ordering::SeqCst);
+            if let Some(barrier) = &self.withdrawal_barrier {
+                barrier.wait().await;
+            }
             (self.result)().map(Response::new)
         }
         async fn update_committee(
@@ -469,6 +481,47 @@ mod tests {
             "same wid at a bumped seq must replay, not re-consume"
         );
         assert_replayed(&r2);
+    }
+
+    /// F2: the index lookup and the forward are not atomic. Two concurrent
+    /// requests for one wid at seq n and n+1 both miss the index and both
+    /// reach the enclave, which signs the wid twice.
+    #[tokio::test]
+    async fn concurrent_same_wid_at_consecutive_seqs_are_both_forwarded() {
+        let wid = [0xf2; 32];
+        // Each forward waits until the other has also been forwarded, so the
+        // enclave has written no log when either lookup runs. A proxy that
+        // serialised per wid would time out here.
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let (stub, count) = StubGuardian::ok();
+        let cache = cache_over(stub.with_withdrawal_barrier(barrier), MemStore::default()).await;
+
+        let (r_n, r_n1) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(
+                cache.standard_withdrawal(mock_request(wid, 0)),
+                cache.standard_withdrawal(mock_request(wid, 1)),
+            )
+        })
+        .await
+        .expect("both requests must reach the enclave concurrently");
+        r_n.unwrap();
+        r_n1.unwrap();
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            2,
+            "one wid was forwarded to the enclave twice"
+        );
+
+        // The enclave logs both signings. The index now holds one wid at two seqs.
+        enclave_wrote(&cache, wid, 0);
+        enclave_wrote(&cache, wid, 1);
+        let hit = cache
+            .widlog()
+            .lookup(&WithdrawalID::new(wid), now_timestamp_secs())
+            .await
+            .unwrap()
+            .expect("wid is logged");
+        assert_eq!(hit.consumed_seq, 1);
     }
 
     fn info_request() -> Request<proto::GetGuardianInfoRequest> {

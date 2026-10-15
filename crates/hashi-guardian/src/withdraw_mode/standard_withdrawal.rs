@@ -326,6 +326,61 @@ mod tests {
         assert_eq!(post_state.num_tokens_available, 0);
     }
 
+    /// F2: the enclave has no dedup by wid. The same wid and utxos at seq n
+    /// and then seq n+1 are both signed, logged, and debited.
+    #[tokio::test]
+    async fn same_wid_at_consecutive_seqs_is_signed_and_debited_twice() {
+        let wid = WithdrawalID::new([0xf2; 32]);
+        let timestamp_secs = now_timestamp_secs();
+        let (req_n, committee) = StandardWithdrawalRequest::mock_signed_and_committee_with_seq(
+            Network::Regtest,
+            wid,
+            timestamp_secs,
+            0,
+        );
+        let (req_n1, _) = StandardWithdrawalRequest::mock_signed_and_committee_with_seq(
+            Network::Regtest,
+            wid,
+            timestamp_secs,
+            1,
+        );
+        assert_eq!(req_n.message().utxos(), req_n1.message().utxos());
+        let amount_sats = req_n.message().utxos().gross_outflow_amount().to_sat();
+        let capacity = 2 * amount_sats;
+        let (mut enclave, captures) =
+            setup_fully_initialized_enclave(Network::Regtest, committee, capacity).await;
+
+        standard_withdrawal(&mut enclave, wire(req_n))
+            .await
+            .expect("first signing of wid at seq 0 succeeds");
+        standard_withdrawal(&mut enclave, wire(req_n1))
+            .await
+            .expect("second signing of the same wid at seq 1 succeeds");
+
+        let limiter = enclave.state.limiter_state().expect("activated");
+        assert_eq!(limiter.next_seq, 2);
+        assert_eq!(limiter.num_tokens_available, capacity - 2 * amount_sats);
+
+        let captured = captures.lock().unwrap();
+        let records: Vec<(WithdrawalID, u64)> = captured
+            .iter()
+            .map(|(_, bytes)| {
+                let entry: SignedLogEntry = serde_json::from_slice(bytes).unwrap();
+                let VersionedLogMessage::V1(LogMessageV1::Withdrawal(message)) =
+                    entry.message_unchecked()
+                else {
+                    panic!("expected V1 withdrawal record");
+                };
+                (message.request_data.wid, message.request_data.seq)
+            })
+            .collect();
+        assert_eq!(
+            records,
+            vec![(wid, 0), (wid, 1)],
+            "one wid has two withdrawal records"
+        );
+    }
+
     #[test]
     fn test_request_timestamp_bounds() {
         const GUARDIAN_NOW: u64 = 1_000_000;
