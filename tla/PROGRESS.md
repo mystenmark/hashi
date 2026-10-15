@@ -106,8 +106,9 @@
   - `GuardianSessionsAhead1.cfg`: pass, 39.8M states.
   - `GuardianSessionsAhead2.cfg`, `GuardianSessionsLate.cfg`: `UniqueSeq`
     fails (F13). `GuardianSessionsWriterAhead.cfg`: `OneWriter` fails.
-  - Not modelled: committee records, two standbys activating together,
-    the three-session recovery rollback (argued in F13).
+  - `GuardianSessionsRollback.cfg` (three sessions, scaled fence):
+    `RecoveryExact` fails (R12 rollback).
+  - Not modelled: committee records.
 - Validation: F1 reproduced in a Rust test on branch
   `mlogan-f1-dkg-complaint-test` (see FINDINGS.md F1). F2 reproduced on
   `mlogan-f2-guardian-double-sign-test`. F9 reproduced on
