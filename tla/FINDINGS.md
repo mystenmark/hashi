@@ -86,6 +86,26 @@ checked), **review-confirmed** (reviewers traced it in code; no model yet),
 - **Context:** the config comment says allow-listing a dealer "can leak
   private shares to the dealer". The policy is therefore a deliberate
   trade-off; the open question is whether this impact was accounted for.
+- **Removing the attacker (R10):** after genesis, governance can pass
+  `IgnoreMember` (2/3), and the next formation excludes the member. It
+  still deals in that rotation from the old committee, but it is not in
+  the new committee, so it cannot withhold a completion signature.
+  [`DkgRotation.tla`](DkgRotation.tla) (10 unit-weight new members, old
+  threshold 4) shows:
+  - [`DkgRotationOneOut.cfg`](DkgRotationOneOut.cfg): one removed
+    Byzantine dealer cannot block the rotation. It hurts at most 3, and 7
+    honest holders meet the completion threshold of 7 exactly.
+  - [`DkgRotationOneOutOneNew.cfg`](DkgRotationOneOutOneNew.cfg): one
+    removed dealer plus one new member that does not sign blocks it. An
+    offline honest member counts the same, so the zero margin makes the
+    block likely in practice.
+  - [`DkgRotationTwoOut.cfg`](DkgRotationTwoOut.cfg): two removed
+    Byzantine dealers block it with no other fault.
+  When the rotation aborts, the old committee stays, the removed members
+  deal again at the next formation, and the cycle repeats. Removal then
+  needs the operators' allow-list. The model uses unit weights; real
+  reduced weights and the unreduced completion threshold may move the
+  margin either way.
 - **Open questions:** Does weight reduction change the bound in practice? Is
   there an operator runbook for populating the allow-list during an attack?
   Could the protocol exclude a dealer with verified complaints from the
@@ -111,8 +131,9 @@ checked), **review-confirmed** (reviewers traced it in code; no model yet),
     [`withdrawals.rs:944-973`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/withdrawals.rs#L944-L973)).
     The member sends concurrent requests for one committed `W` at
     consecutive seqs. By the same logic k requests reach the enclave and are
-    each debited, so one `W` can drain the bucket. This is inferred from the
-    code; the Rust test covers k = 2.
+    each debited, so one `W` can drain the bucket. The model confirms
+    k = 3 ([`GuardianLimiterByz.cfg`](GuardianLimiterByz.cfg): one wid
+    logged at seqs 0, 1, and 2); the Rust test covers k = 2.
   - **Why:** no BTC is gained. The member drains tokens and stalls
     withdrawals for about 5 minutes per committed `W`, and can repeat this
     for each new `W`. A competing bridge, a holder of a short position on
@@ -922,7 +943,7 @@ are review-confirmed unless marked otherwise.
 | R3 | The Guardian-request certificate is signed after checking only `W` exists and the timestamp. The limiter check happens later, at finalize, after the Guardian has consumed tokens. | Composed in `BridgeLimiter`: `GsigLogged` and `FinalizedLogged` hold. A finalize refused by follower mirrors is retried; the proxy replays the logged signatures, so tokens are not debited again, and mirrors are snapped after about 5 minutes ([`cache.rs:161-170`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi-guardian-proxy/src/node/cache.rs#L161-L170), [`guardian_limiter.rs:244-283`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/guardian_limiter.rs#L244-L283)). Liveness was not model-checked, because the limiter clock is bounded. |
 | R4 | "One unsigned `W` at a time" is enforced only off chain. Concurrent leaders can commit several. A `W` that never becomes fully signed blocks all later commits by honest leaders. | Modelled. Consequences in F9 ([`BridgeReconfigLive.cfg`](BridgeReconfigLive.cfg)) and F12 ([`BridgeLimiterRotateStuck.cfg`](BridgeLimiterRotateStuck.cfg)). |
 | R7 | Change outputs are not validated on chain (address, amount, txid). Relies on an honest 2/3. | Covered by `Bridge`. With honest certificates ([`Bridge.cfg`](Bridge.cfg)) change goes to a Hashi address and all safety holds. With arbitrary certificates ([`BridgeByzCerts.cfg`](BridgeByzCerts.cfg)) only the chain-only invariants hold, as expected. No separate model is needed. |
-| R10 | A member with 5% weight can pause alone; more than 1/3 can block unpause. | Analysed by code reading; no model. A pause proposal is met by its creator's vote alone ([`proposal.move:221-225`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/packages/hashi/sources/core/proposal/proposal.move#L221-L225)), proposals live 7 days, `execute` is permissionless, and nothing limits how often a pause may follow an unpause ([`emergency_pause.move:23-53`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/packages/hashi/sources/core/proposal/types/emergency_pause.move#L23-L53)). One Byzantine member with 5% weight can therefore pre-create pause proposals and execute one after every unpause, so the bridge stays paused most of the time. Removal works: `IgnoreMember` (2/3) excludes it from the next committee, reconfiguration is not gated by pause, and votes are weighed against the current committee at execution ([`proposal.move:266-275`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/packages/hashi/sources/core/proposal/proposal.move#L266-L275)), so its queued proposals lose their weight. Open question: the same member deals in the rotation that removes it, so under the default complaint policy it may block that rotation (F1). |
+| R10 | A member with 5% weight can pause alone; more than 1/3 can block unpause. | Analysed by code reading; no model. A pause proposal is met by its creator's vote alone ([`proposal.move:221-225`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/packages/hashi/sources/core/proposal/proposal.move#L221-L225)), proposals live 7 days, `execute` is permissionless, and nothing limits how often a pause may follow an unpause ([`emergency_pause.move:23-53`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/packages/hashi/sources/core/proposal/types/emergency_pause.move#L23-L53)). One Byzantine member with 5% weight can therefore pre-create pause proposals and execute one after every unpause, so the bridge stays paused most of the time. Removal works: `IgnoreMember` (2/3) excludes it from the next committee, reconfiguration is not gated by pause, and votes are weighed against the current committee at execution ([`proposal.move:266-275`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/packages/hashi/sources/core/proposal/proposal.move#L266-L275)), so its queued proposals lose their weight. The member still deals in the rotation that removes it. [`DkgRotation.tla`](DkgRotation.tla) shows it alone cannot block that rotation, but it can with one offline new member, and two such members can with no other fault (F1, "Removing the attacker"). |
 | R11 | Limiter config is per Guardian session; activation only caps tokens. A rotation can raise `max` or `rate`. | Lowering is modelled as F12. Raising `max` or `rate` loosens the rate bound and is a policy question for the operator. |
 | R12 | Limiter recovery at activation reads only two hour directories. Writer-ahead clock skew above about 1 hour can roll back `seq` and tokens or allow a second activation. | Modelled in F13 ([`GuardianSessionsWriterAhead.cfg`](GuardianSessionsWriterAhead.cfg), [`GuardianSessionsRollback.cfg`](GuardianSessionsRollback.cfg)). Correction: recovery reads the newest non-empty hour and the one before it, not a window around the current time. |
 | R13 | Proxy replay data is kept 30 days; a retry after that consumes tokens again. | Not modelled. Confirmed by code reading ([`widlog.rs:66`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi-guardian-proxy/src/node/widlog.rs#L66), [`218-219`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi-guardian-proxy/src/node/widlog.rs#L218-L219), [`cache.rs:172-181`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi-guardian-proxy/src/node/cache.rs#L172-L181)). The enclave signs again only if the request's seq equals `next_seq`. The second debit over-counts outflow, which is conservative; it needs a `W` that is Guardian-signed but not finalized for 30 days. |
