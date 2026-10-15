@@ -995,6 +995,50 @@ exclude key material older than the erasure window?
   install past a skipped one; alert on discarded batches; give the leader
   a way to reallocate indices that fall in a batch that cannot seal.
 
+### F15. A withdrawal signed at a fee the market later leaves behind waits, but anyone can bump it
+
+- **Status:** analysed by code reading; **no action required.** Recorded so
+  that later reviews do not rediscover it without this context. Not
+  modelled: a TLA model would only restate "a transaction with too low a
+  fee may not be mined".
+- **Threat model:** no adversary is needed; a fee spike after signing is
+  enough. Nobody gains by causing it.
+- **Facts:**
+  - The fee rate is fixed at commit: the `estimatesmartfee` estimate,
+    capped at 100 sat/vB on mainnet and raised to the operator floor
+    ([`withdrawals.rs:54`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/withdrawals.rs#L54),
+    [`:321-330`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/withdrawals.rs#L321-L330)). A
+    committed `W` cannot be re-signed, replaced, or cancelled, so no
+    protocol RBF exists, although the inputs signal it
+    ([`utxo.rs:151`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi-types/src/bitcoin/utxo.rs#L151)).
+  - Hashi's only bump is CPFP: a later withdrawal that spends `W`'s
+    unconfirmed change pays the ancestor deficit from its requests'
+    amounts ([`utxo_pool/mod.rs:14-19`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/utxo_pool/mod.rs#L14-L19)).
+    It needs a change output, new demand, coin selection to pick that
+    change (largest first, not targeted;
+    [`utxo_pool/mod.rs:831`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/utxo_pool/mod.rs#L831)),
+    and chain depth at most 5. Operators can raise
+    `withdrawal_min_fee_rate_sat_vb` to raise the child's target
+    ([`config.rs:236-243`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/config.rs#L236-L243)).
+  - The leader rebroadcasts every tick, so mempool expiry does not lose it.
+  - R4 gates on signing, not confirmation, so a stuck `W` does not block
+    new commits. Its inputs stay locked and its change is unusable until
+    it confirms.
+- **Why it is not a liveness risk:** the signed transaction is public.
+  Anyone can pay to have it mined: a recipient by CPFP from their own
+  output (adding their own inputs if the output is small), submitted as a
+  one-parent-one-child package if the parent is below the mempool minimum;
+  or anyone through a mining pool's accelerator. Disbursement therefore
+  depends on fees falling or on someone paying, not on the protocol.
+- **Residual notes:** the cost falls on whoever needs the funds, usually
+  the recipient; package relay of a parent below the mempool minimum is
+  not yet reliable across the network; Hashi liquidity in the locked
+  inputs waits. Possible user documentation: how a recipient can bump a
+  stuck withdrawal.
+- **End-to-end chain:** the Bitcoin step is taken as an assumption: every
+  signed withdrawal transaction is eventually mined, because the protocol
+  rebroadcasts it and anyone may pay to bump it.
+
 ## Reorgs
 
 Not modelled separately. The Bitcoin model has a mempool level and a final
