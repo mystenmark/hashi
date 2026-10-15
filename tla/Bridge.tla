@@ -373,9 +373,15 @@ CleanupSpent(id) ==
 
 EpochNext == StartReconfig \/ EndReconfig \/ AbortReconfig
 
-\* Actions other than epoch changes and Guardian signing, which a composed
-\* model replaces.
-OpNext ==
+\* Actions a composed model may synchronise with the Guardian limiter.
+LimiterCoupled ==
+    \/ \E w \in Wids, Q \in SUBSET Reqs, I \in SUBSET PoolIds,
+          fee \in 0..MaxFee, ch \in BOOLEAN :
+          CommitWithdrawal(w, Q, I, fee, ch)
+    \/ \E w \in Wids : CommitInputSignatures(w) \/ FinalizeWithdrawal(w)
+
+\* Actions other than epoch changes, Guardian signing, and LimiterCoupled.
+CoreOpNext ==
     \/ \E o \in DepOuts : SendDeposit(o)
     \/ \E t \in mempool : Mine(t) \/ Evict(t)
     \/ \E id \in PoolIds : RecoverySpend(id) \/ CleanupSpent(id)
@@ -385,13 +391,11 @@ OpNext ==
           \/ Expire(r) \/ DeleteExpired(r) \/ ConfirmDeposit(r)
     \/ \E q \in Reqs :
           RequestWithdrawal(q) \/ CancelWithdrawal(q) \/ ApproveRequest(q)
-    \/ \E w \in Wids, Q \in SUBSET Reqs, I \in SUBSET PoolIds,
-          fee \in 0..MaxFee, ch \in BOOLEAN :
-          CommitWithdrawal(w, Q, I, fee, ch)
     \/ \E w \in Wids :
-          \/ MpcSign(w) \/ CommitInputSignatures(w)
-          \/ FinalizeWithdrawal(w) \/ BroadcastWithdrawal(w)
-          \/ ConfirmWithdrawal(w)
+          MpcSign(w) \/ BroadcastWithdrawal(w) \/ ConfirmWithdrawal(w)
+
+\* Actions other than epoch changes and Guardian signing.
+OpNext == CoreOpNext \/ LimiterCoupled
 
 Next == EpochNext \/ OpNext \/ \E w \in Wids : GuardianSign(w)
 

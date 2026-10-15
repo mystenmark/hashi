@@ -28,7 +28,8 @@ CONSTANTS
     Quorum,     \* number of nodes whose mirrors must accept a finalize
     Slack,      \* slack in the real-time rate bound being checked
     MaxSnaps,   \* bound on Reconcile plus Restart steps, to keep TLC finite
-    SnapBehind  \* Reconcile may snap a mirror that is behind the Guardian
+    SnapBehind, \* Reconcile may snap a mirror that is behind the Guardian
+    RotateTo    \* max capacity of a later session; Max disables rotation
 
 ASSUME Quorum <= Cardinality(Nodes)
 
@@ -43,13 +44,14 @@ VARIABLES
     final,              \* sequence of finalized [wid, ts] in chain order
     mirror,             \* per node: [seq, tok, last]
     seen,               \* per node: prefix of final the mirror has applied
-    snaps               \* Reconcile plus Restart steps taken
+    snaps,              \* Reconcile plus Restart steps taken
+    gMax                \* the session's max capacity, adopted by all mirrors
 
 vars == <<now, gSeq, gTok, gLast, log, proxyIn, enclaveQ, replies, ready,
-          final, mirror, seen, snaps>>
+          final, mirror, seen, snaps, gMax>>
 
 Min(a, b) == IF a < b THEN a ELSE b
-Cap(m, ts) == Min(Max, m.tok + (ts - m.last) * Rate)
+Cap(m, ts) == Min(gMax, m.tok + (ts - m.last) * Rate)
 Valid(m, s, ts, a) == s = m.seq /\ ts >= m.last /\ Cap(m, ts) >= a
 GState == [seq |-> gSeq, tok |-> gTok, last |-> gLast]
 
@@ -64,7 +66,7 @@ SumAmt(S) == IF S = {} THEN 0
 
 TypeOK ==
     /\ now \in 0..MaxTime
-    /\ gSeq \in Nat /\ gTok \in 0..Max /\ gLast \in Nat
+    /\ gSeq \in Nat /\ gTok \in 0..gMax /\ gLast \in Nat
     /\ ready \subseteq Wids
     /\ \A n \in Nodes : seen[n] \in 0..Len(final)
 
@@ -78,6 +80,7 @@ Init ==
     /\ mirror = [n \in Nodes |-> [seq |-> 0, tok |-> Max, last |-> 0]]
     /\ seen = [n \in Nodes |-> 0]
     /\ snaps = 0
+    /\ gMax = Max
 
 -----------------------------------------------------------------------------
 
@@ -85,14 +88,14 @@ Tick ==
     /\ now < MaxTime
     /\ now' = now + 1
     /\ UNCHANGED <<gSeq, gTok, gLast, log, proxyIn, enclaveQ, replies, ready,
-                   final, mirror, seen, snaps>>
+                   final, mirror, seen, snaps, gMax>>
 
 \* Environment: a withdrawal's MPC signatures are all committed on chain.
 MpcComplete(w) ==
     /\ w \notin ready /\ w \notin FinalSet
     /\ ready' = ready \cup {w}
     /\ UNCHANGED <<now, gSeq, gTok, gLast, log, proxyIn, enclaveQ, replies,
-                   final, mirror, seen, snaps>>
+                   final, mirror, seen, snaps, gMax>>
 
 TsRange == {t \in 0..(MaxTime + TsSkew) : now <= t + TsSkew /\ t <= now + TsSkew}
 
@@ -106,7 +109,7 @@ Request(n, w) ==
          /\ proxyIn' = proxyIn \cup
               {[from |-> n, wid |-> w, seq |-> mirror[n].seq, ts |-> ts]}
     /\ UNCHANGED <<now, gSeq, gTok, gLast, log, enclaveQ, replies, ready,
-                   final, mirror, seen, snaps>>
+                   final, mirror, seen, snaps, gMax>>
 
 \* Proxy lookup. A hit replays the logged signatures; a miss forwards.
 Proxy(r) ==
@@ -118,7 +121,7 @@ Proxy(r) ==
        ELSE /\ enclaveQ' = enclaveQ \cup {r}
             /\ UNCHANGED replies
     /\ UNCHANGED <<now, gSeq, gTok, gLast, log, ready, final, mirror, seen,
-                   snaps>>
+                   snaps, gMax>>
 
 \* Enclave handling: timestamp window, consume, sign, log (release point).
 \* A rejected request is dropped; the leader may retry.
@@ -135,7 +138,7 @@ Enclave(r) ==
                                  amt |-> Amt[r.wid], at |-> now]}
             /\ replies' = replies \cup {r}
        ELSE UNCHANGED <<gSeq, gTok, gLast, log, replies>>
-    /\ UNCHANGED <<now, proxyIn, ready, final, mirror, seen, snaps>>
+    /\ UNCHANGED <<now, proxyIn, ready, final, mirror, seen, snaps, gMax>>
 
 \* A leader that holds guardian signatures gathers the finalize certificate.
 \* Each follower checks validate_consume(seq, ts, amount) on its own mirror.
@@ -148,14 +151,14 @@ Finalize(r) ==
     /\ final' = Append(final, [wid |-> r.wid, ts |-> now])
     /\ replies' = {x \in replies : x.wid # r.wid}
     /\ UNCHANGED <<now, gSeq, gTok, gLast, log, proxyIn, enclaveQ, mirror,
-                   seen, snaps>>
+                   seen, snaps, gMax>>
 
 \* A leader gives up on a reply it cannot finalize, and may request again.
 DropReply(r) ==
     /\ r \in replies
     /\ replies' = replies \ {r}
     /\ UNCHANGED <<now, gSeq, gTok, gLast, log, proxyIn, enclaveQ, ready,
-                   final, mirror, seen, snaps>>
+                   final, mirror, seen, snaps, gMax>>
 
 \* A node observes the next finalize and applies it with its own next_seq and
 \* the finalize checkpoint time. On error the mirror is left unchanged.
@@ -170,7 +173,7 @@ Observe(n) ==
               ELSE m]
     /\ seen' = [seen EXCEPT ![n] = @ + 1]
     /\ UNCHANGED <<now, gSeq, gTok, gLast, log, proxyIn, enclaveQ, replies,
-                   ready, final, snaps>>
+                   ready, final, snaps, gMax>>
 
 \* Periodic reconcile snaps the mirror to the Guardian. The code snaps at
 \* once when ahead or when only tokens differ, and after about 5 minutes
@@ -183,7 +186,7 @@ Reconcile(n) ==
        \/ SnapBehind
     /\ mirror' = [mirror EXCEPT ![n] = GState]
     /\ UNCHANGED <<now, gSeq, gTok, gLast, log, proxyIn, enclaveQ, replies,
-                   ready, final, seen>>
+                   ready, final, seen, gMax>>
 
 \* A restart seeds the mirror from GetGuardianInfo at the current chain point.
 Restart(n) ==
@@ -192,7 +195,19 @@ Restart(n) ==
     /\ mirror' = [mirror EXCEPT ![n] = GState]
     /\ seen' = [seen EXCEPT ![n] = Len(final)]
     /\ UNCHANGED <<now, gSeq, gTok, gLast, log, proxyIn, enclaveQ, replies,
-                   ready, final>>
+                   ready, final, gMax>>
+
+\* An operator rotation starts a session with max RotateTo. Activation
+\* recovers seq and tokens from the log and caps tokens to the new max;
+\* nodes adopt the new config on their next reconcile tick
+\* (limiter_recovery.rs:44-85, guardian_limiter.rs:157-166).
+Rotate ==
+    /\ gMax = Max /\ RotateTo # Max
+    /\ gMax' = RotateTo
+    /\ gTok' = Min(gTok, RotateTo)
+    /\ mirror' = [n \in Nodes |-> [mirror[n] EXCEPT !.tok = Min(@, RotateTo)]]
+    /\ UNCHANGED <<now, gSeq, gLast, log, proxyIn, enclaveQ, replies, ready,
+                   final, seen, snaps>>
 
 Next ==
     \/ Tick
@@ -202,6 +217,7 @@ Next ==
     \/ \E r \in enclaveQ : Enclave(r)
     \/ \E r \in replies : Finalize(r) \/ DropReply(r)
     \/ \E n \in Nodes : Observe(n) \/ Reconcile(n) \/ Restart(n)
+    \/ Rotate
 
 Spec == Init /\ [][Next]_vars
 
