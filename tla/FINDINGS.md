@@ -1060,6 +1060,27 @@ Not composed in one model: the links are joined by matching state
 (BridgeLimiter) and by the assume-guarantee implication. The Guardian
 links ignore committee epochs; `BridgeReconfig` covers those separately.
 
+## End-to-end deposit liveness
+
+Property `DepositMinted`: once a user's deposit output is final on Bitcoin
+and a true claim for it exists, the output eventually enters the pool and
+its hBTC is minted. The user refiles the claim after expiry. Bridge's
+older `DepositCompletes` counts expiry and deletion as completion; this
+property does not. Deposits involve neither the Guardian nor MPC signing.
+
+| Link | Established by | Conditions |
+|---|---|---|
+| Approve, delay, confirm, with refiling after expiry | [`BridgeLiveDepositE2E.cfg`](BridgeLiveDepositE2E.cfg) passes (deposit-only: no withdrawals); [`BridgeLiveDepositE2ENoRetry.cfg`](BridgeLiveDepositE2ENoRetry.cfg) fails, so refiling is needed | Approval, the 10 min delay, and confirmation win the race with the 24 h expiry infinitely often (strong fairness per claim) |
+| Completed reconfigurations: re-approval by the new committee | [`BridgeReconfigLiveDepositE2E.cfg`](BridgeReconfigLiveDepositE2E.cfg) passes | Reconfigurations complete or abort (F1 margins); not pending for most of each epoch (R14) |
+| Pause | [`BridgeLiveDepositE2EFaults.cfg`](BridgeLiveDepositE2EFaults.cfg) fails: the trace pauses each time confirmation becomes possible and unpauses after expiry | No pause loop (R10) |
+| False claims on the same output do not block the true one | Code: several requests may name one output, and the first confirmed wins ([`deposit.move:168-174`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/packages/hashi/sources/btc/deposit.move#L168-L174)); the leader takes one claim per output, oldest first, and marks a mismatched claim never-retry, so the next claim is tried ([`leader/deposits.rs:710-742`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/leader/deposits.rs#L710-L742), [`deposits.rs:500-521`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/deposits.rs#L500-L521)) | none |
+| Honest nodes see the final output | assumption: the Bitcoin monitor reports outputs at threshold depth | Reorgs shallower than the threshold |
+| Policy refusals | Code: AML rejection is never-retry, so that deposit never mints; amounts below `deposit_minimum` are refused at `deposit()` | AML-clean and above the minimum; no refund path exists for refused deposits |
+| The user's Bitcoin transaction confirms | user's own transaction | The user can fee-bump it |
+
+The deposit-only configs drop withdrawals to keep TLC's liveness check
+small; deposits do not read withdrawal state except through the pool.
+
 ## Reorgs
 
 Not modelled separately. The Bitcoin model has a mempool level and a final
