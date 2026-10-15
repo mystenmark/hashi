@@ -101,9 +101,9 @@
 - `GuardianSessions` (via `MC_GuardianSessions.tla`): heartbeat fence,
   attempt timeout with late durability, activation scan, limiter recovery.
   Session `a` starts active; `b` may take over.
-  - `GuardianSessions.cfg`: all pass, 33.1M states. Probe reaches a
+  - `GuardianSessions.cfg`: all pass, 62.2M states (with withdrawal ids). Probe reaches a
     handover with records from both sessions.
-  - `GuardianSessionsAhead1.cfg`: pass, 39.8M states.
+  - `GuardianSessionsAhead1.cfg`: pass, 74.4M states.
   - `GuardianSessionsAhead2.cfg`, `GuardianSessionsLate.cfg`: `UniqueSeq`
     fails (F13). `GuardianSessionsWriterAhead.cfg`: `OneWriter` fails.
   - `GuardianSessionsRollback.cfg` (three sessions, scaled fence):
