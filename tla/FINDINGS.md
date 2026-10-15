@@ -1039,6 +1039,27 @@ exclude key material older than the erasure window?
   signed withdrawal transaction is eventually mined, because the protocol
   rebroadcasts it and anyone may pay to bump it.
 
+## End-to-end withdrawal liveness
+
+Property `RequestPaid`: a submitted withdrawal request is eventually paid
+by a final Bitcoin transaction and confirmed on Sui, unless the user
+cancels it. It is checked as a chain; each link names the model that
+establishes it and the conditions it needs.
+
+| Link | Established by | Conditions |
+|---|---|---|
+| Bridge: if the Guardian signs every MPC-recorded `W`, requests are paid | [`BridgeLiveE2EGuardian.cfg`](BridgeLiveE2EGuardian.cfg) (`GuardianSigns => RequestPaid`, Bridge with no Guardian fairness); [`BridgeLiveE2ENoGuardian.cfg`](BridgeLiveE2ENoGuardian.cfg) fails, so the link is needed | No pause loop (R10); amount at most the limiter max, else the request is skipped |
+| Reconfiguration does not block it | [`BridgeReconfigLiveFixE2E.cfg`](BridgeReconfigLiveFixE2E.cfg) passes, [`BridgeReconfigLiveE2E.cfg`](BridgeReconfigLiveE2E.cfg) fails | F9 fix; reconfigurations complete (F1 margins) and start retries do not lapse (R9) |
+| `GuardianSigns`: ready withdrawals are logged by the Guardian | `ReadyConsumed` in [`GuardianLimiterSeq.tla`](GuardianLimiterSeq.tla) ([`GuardianLimiterSeqLive.cfg`](GuardianLimiterSeqLive.cfg), [`GuardianLimiterSeqLiveThree.cfg`](GuardianLimiterSeqLiveThree.cfg)), with refinement from the full limiter ([`MC_GuardianLimiterRefine.tla`](MC_GuardianLimiterRefine.tla)) | Amount at most the Guardian's max (F12); refusals do not recur forever (bucket refill, honest timestamps); Guardian on the current committee (F9) |
+| Limiter "ready" and log match Bridge's MPC record and Guardian signatures | `ReadyIsMpcRec` and `GsigLogged` in [`BridgeLimiter.cfg`](BridgeLimiter.cfg) | none |
+| Consumed withdrawals are finalized | `ConsumedFinalized` in `GuardianLimiterSeq` | as above |
+| MPC input signing completes | [`MpcSigning.tla`](MpcSigning.tla) | Cumulative batch skips below the seal margin, or an epoch change after which they do not recur (F14) |
+| Bitcoin mines the signed transaction | assumption | Rebroadcast plus permissionless fee bumping (F15) |
+
+Not composed in one model: the links are joined by matching state
+(BridgeLimiter) and by the assume-guarantee implication. The Guardian
+links ignore committee epochs; `BridgeReconfig` covers those separately.
+
 ## Reorgs
 
 Not modelled separately. The Bitcoin model has a mempool level and a final
