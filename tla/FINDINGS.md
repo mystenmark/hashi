@@ -513,8 +513,13 @@ exclude key material older than the erasure window?
   skew also breaks limiter recovery. A record written with a far-ahead
   clock lands in a future hour directory, and recovery reads only the
   newest non-empty hour and the one before it. A later session then
-  recovers a low seq and reuses seqs. This second path was derived from
-  `limiter_recovery.rs:48-110`; it was not model-checked.
+  recovers a low seq and reuses seqs (`limiter_recovery.rs:48-110`).
+  `GuardianSessionsRollback.cfg` confirms it with three sessions; the fence
+  constants are scaled down (Q 4, attempt 1), since the path depends on
+  hour directories. `a`'s clock is 130 minutes ahead and writes seq 0 into
+  hour 3. `b` recovers next seq 1 and writes seq 1 into hour 1. `c`
+  recovers from hours 2 and 3 only, gets next seq 1 instead of 2, and
+  `RecoveryExact` fails.
 - **Fix directions:** make the fence independent of delivery time. For
   example, the reader could reject records whose signed timestamp is after
   the writer's last heartbeat plus `Q - Budget - Attempt`, or recovery could
@@ -534,7 +539,7 @@ are review-confirmed unless marked otherwise.
 | R7 | Change outputs are not validated on chain (address, amount, txid). Relies on an honest 2/3. | `Bridge` |
 | R10 | A member with 5% weight can pause alone; more than 1/3 can block unpause. | `Reconfig` / governance |
 | R11 | Limiter config is per Guardian session; activation only caps tokens. A rotation can raise `max` or `rate`. | Lowering is modelled as F12. Raising `max` or `rate` loosens the rate bound and is a policy question for the operator. |
-| R12 | Limiter recovery at activation reads only two hour directories. Writer-ahead clock skew above about 1 hour can roll back `seq` and tokens or allow a second activation. | Partly modelled in F13. Correction: recovery reads the newest non-empty hour and the one before it, not a window around the current time. The second-activation path is `GuardianSessionsWriterAhead.cfg`. |
+| R12 | Limiter recovery at activation reads only two hour directories. Writer-ahead clock skew above about 1 hour can roll back `seq` and tokens or allow a second activation. | Modelled in F13 (`GuardianSessionsWriterAhead.cfg`, `GuardianSessionsRollback.cfg`). Correction: recovery reads the newest non-empty hour and the one before it, not a window around the current time. |
 | R13 | Proxy replay data is kept 30 days; a retry after that consumes tokens again. | Not modelled. Confirmed by code reading (`widlog.rs:66, 218-219`, `cache.rs:172-181`). The enclave signs again only if the request's seq equals `next_seq`. The second debit over-counts outflow, which is conservative; it needs a `W` that is Guardian-signed but not finalized for 30 days. |
 | R14 | Repeated reconfigurations re-approve deposits and restart the delay, which can starve confirmation. | Analysed, not a separate issue. Only a completed reconfiguration triggers re-approval; an abort keeps the epoch, so stored certs stay valid (`leader/deposits.rs:64-76`, `deposit.move:159-161`). Completions happen at most once per Sui epoch (about 24 h) and the delay is 10 min, so starvation needs a reconfiguration pending most of each epoch. That is the bridge stall of PROTOCOL.md 2.4 (for example F1), in which unconfirmed requests also expire after 24 h and must be resubmitted. `BridgeReconfigLiveFix.cfg` checks `DepositCompletes` with re-approval across epochs. |
 | R16 | Seal signatures are kept in memory only; after a restart a node may sign a different dealer-set digest. Liveness only. | `Presig` (batches) |
