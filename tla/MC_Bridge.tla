@@ -21,5 +21,13 @@ NeverChildFirst ==
     ~\E w, v \in Wids :
         /\ ChangeId(v) \in wtx[w].ins
         /\ wtx[w].st = "conf" /\ wtx[v].st # "conf"
+\* End to end: a submitted withdrawal request is eventually paid by a final
+\* Bitcoin transaction and recorded as confirmed on Sui, unless the user
+\* cancels it first.
+Paid(q) == \E w \in Wids : q \in wtx[w].reqs /\ WTx(w) \in finalTx
+PaidConfirmed(q) == \E w \in Wids : q \in wtx[w].reqs /\ wtx[w].st = "conf"
+RequestPaid ==
+    \A q \in Reqs : (wreq[q] = "req") ~> (wreq[q] = "canc" \/ PaidConfirmed(q))
+
 NeverBothWithdrawn == \E q \in Reqs : wreq[q] # "comm"
 =============================================================================
