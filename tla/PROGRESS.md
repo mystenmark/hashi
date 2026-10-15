@@ -32,8 +32,9 @@
     flagged point 22 leads to point 5.
   - `GuardianLimiterFutureOnly.cfg`: real-time rate bound with slack Future
     violated by a past timestamp, confirming review finding E1.
-  - `GuardianLimiter.cfg`, `GuardianLimiterRateWide.cfg`: SeqRateBound and
-    RealTimeRateBound with slack Past + Future pass (3.7M states).
+  - `GuardianLimiter.cfg` (33k states), `GuardianLimiterRateWide.cfg` (3.7M
+    states): SeqRateBound and RealTimeRateBound with slack Past + Future
+    pass.
   - Abstractions: one clock for enclave and nodes; any snap allowed when
     SnapBehind (the code waits about 5 minutes); snaps bounded by MaxSnaps.
 
@@ -86,6 +87,17 @@
   - `BridgeReconfigTwo.cfg` (two requests, two W): passes, 18.2M
     states.
   - R14 analysed: not separate from the PROTOCOL.md 2.4 stall.
+- `GuardianLimiter` gains `gMax` and `Rotate` (`RotateTo`; equal to `Max`
+  disables it). Existing configs give unchanged results.
+- `BridgeLimiter` (via `MC_BridgeLimiter.tla`): commit-input-sigs, Guardian
+  signing, and finalize are joint steps with the limiter.
+  - `BridgeLimiter.cfg`: Bridge and limiter safety plus `GsigLogged`,
+    `FinalizedLogged`, `SignableByGuardian` pass, 157k states. Probes reach
+    one and two finalized withdrawals.
+  - `BridgeLimiterRotate.cfg`: `SignableByGuardian` fails (F12).
+  - `BridgeLimiterRotateStuck.cfg`: `StuckIsPermanent` and
+    `StuckBlocksCommits` pass, 418k states.
+  - R3 safety holds; R3 liveness not checked (bounded clock).
 - Validation: F1 reproduced in a Rust test on branch
   `mlogan-f1-dkg-complaint-test` (see FINDINGS.md F1). F2 reproduced on
   `mlogan-f2-guardian-double-sign-test`. F9 reproduced on
@@ -96,7 +108,6 @@
 - `Presig`: result of full config (`Presig.cfg`, MaxIndex 3, MaxRand 4).
   Consider modelling batches and seals explicitly so the residual case
   arises only from a digest mismatch plus a code change.
-- Composition: `Bridge` with `GuardianLimiter` (R3, R4).
 - Guardian: model sessions, heartbeat fence, S3 durability, and activation
   (safety 19); committee chain and proxy handoff gate (safety 16); liveness
   "consumed implies finalized".
