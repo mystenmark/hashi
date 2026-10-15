@@ -75,7 +75,8 @@
   - Not modelled: genesis, committee membership changes, governance votes.
 - Validation: F1 reproduced in a Rust test on branch
   `mlogan-f1-dkg-complaint-test` (see FINDINGS.md F1). F2 reproduced on
-  `mlogan-f2-guardian-double-sign-test`.
+  `mlogan-f2-guardian-double-sign-test`. F9 reproduced on
+  `mlogan-f9-guardian-reconcile-gate-test`.
 
 ## Remaining
 
