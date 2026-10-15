@@ -496,17 +496,44 @@ exclude key material older than the erasure window?
   hold it. The README says "The S3 bucket operator is untrusted"
   ([`hashi-guardian/README.md:5`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi-guardian/README.md?plain=1#L5)). Assumption 4 ("S3 does not make a
   timed-out request durable arbitrarily later") is about S3; it does not
-  say what bounds a host-held request. To confirm: S3 rejects SigV4
-  requests whose signed time is more than 15 minutes from its own clock
-  (`RequestTimeTooSkewed`), which would bound the hold near 15 minutes, far
-  above the 1-minute budget.
+  say what bounds a host-held request.
+- **How long the host can hold a PUT:** S3 rejects a SigV4 request whose
+  signed time differs from its own clock by more than 15 minutes
+  (`RequestTimeTooSkewed`). AWS does not document a limit on how long a
+  request may take to arrive. S3 closes a socket that sees no bytes for a
+  while (`RequestTimeout`), but a host that forwards a few bytes at a time
+  keeps the socket open. S3 can only check the date after it has decrypted
+  the TLS record that holds the headers. Two cases follow:
+  - The headers and the small JSON body share one TLS record. The host
+    holds that record and forwards its last byte up to about 15 minutes
+    after signing. The hold is bounded near 15 minutes.
+  - The headers and body arrive in separate records. The host forwards the
+    headers at once, so the date check passes, and then trickles the body.
+    No documented bound applies.
+  Either case is far above the 1-minute budget. To settle which case holds,
+  an experiment can PUT through a proxy that trickles bytes to a test
+  bucket.
+- **Retries:** a timed-out attempt does not panic at once. The writer
+  retries the same record every 10 s, up to 5 attempts, while a new
+  5-minute attempt still fits before the fence, and panics after that
+  ([`log_writer.rs:83-142`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi-guardian/src/log_writer.rs#L83-L142)).
+  Every attempt writes the same key with
+  `If-None-Match: *` ([`s3_client.rs:213-226`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi-guardian/src/s3_client.rs#L213-L226)),
+  so a held earlier attempt that lands late is the same object. The model
+  treats a timed-out write as fatal; the retries do not add new records,
+  so the safety results stand.
 - **Consequence:** the late record is durable, so the proxy can replay its
   signatures. The new session recovered its limiter without that debit,
   so outflow can exceed the rate bound by that record's amount (at most
-  `max`). Two records share a seq; the proxy index does not detect the same
-  seq with different wids ([`widlog.rs:96-125`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi-guardian-proxy/src/node/widlog.rs#L96-L125)). Each handover can leak at
-  most one record, because the old session's writes are serialized and it
-  panics on timeout. Handovers need the key provisioners
+  `max`). Two records share a seq. The object key is
+  `<hour>/<seq>-wid<wid>.json`
+  ([`withdrawal.rs:35-46`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi-types/src/guardian/s3/log_messages/withdrawal.rs#L35-L46)),
+  so `If-None-Match` stops a second write only for the same seq, wid, and
+  hour. The proxy index does not detect the same seq with different wids
+  ([`widlog.rs:96-125`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi-guardian-proxy/src/node/widlog.rs#L96-L125)).
+  Each handover can leak at most one record, because the old session's
+  writes are serialized and it does not start the next record until the
+  current one is confirmed. Handovers need the key provisioners
   (`ProvisionerInit`), which limits repetition.
 - **Clock skew over an hour (R12):** a writer clock more than about an hour
   ahead hides its heartbeats from the activator (`WriterAhead`). The same
@@ -523,9 +550,9 @@ exclude key material older than the erasure window?
 - **Fix directions:** make the fence independent of delivery time. For
   example, the reader could reject records whose signed timestamp is after
   the writer's last heartbeat plus `Q - Budget - Attempt`, or recovery could
-  scan all hours whose records could still be durable. Alternatively,
-  record the 15-minute bound as the late-durability budget and raise `Q`
-  to match.
+  scan all hours whose records could still be durable. If the experiment
+  shows the hold is bounded near 15 minutes, another option is to record
+  that bound as the late-durability budget and raise `Q` to match.
 
 ## Review findings not yet modelled
 
