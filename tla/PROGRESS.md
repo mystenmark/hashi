@@ -129,6 +129,14 @@
 
 ## Done in this pass
 
+- End-to-end `RequestPaid` holds in `Bridge` and in `BridgeReconfig` with
+  the F9 fix; fails without it. Chain of supporting lemmas is listed in
+  the session notes; remaining links: Guardian composition into Bridge
+  fairness, and a fee model.
+- `MpcSigning.tla`: signing liveness holds with up to one cumulative
+  skipping node (7 members, 1 Byzantine); two skips on different batches
+  stall the epoch (F14); an epoch change recovers.
+
 - Guardian liveness: holds on `GuardianLimiterSeq` (seq-only abstraction),
   with refinement from `GuardianLimiter` checked on small configs. The
   full-model liveness run was stopped at 59M states.
