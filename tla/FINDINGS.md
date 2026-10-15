@@ -359,7 +359,23 @@ exclude key material older than the erasure window?
   full leader rotation (100 checkpoints per turn) then sets every node's
   gate.
 - **Model:** `Reconfig.tla`, config `ReconfigGuardianLive.cfg`
-  (`GuardianCatchesUp` fails).
+  (`GuardianCatchesUp` fails). With the fix (`NoCommitteeFails`),
+  `ReconfigGuardianLiveFix.cfg` passes. Both use strong fairness on
+  reconcile, because a failed reconcile is retried every tick.
+- **Bridge consequence:** `BridgeReconfig.tla` composes `Bridge` with
+  `Reconfig`. In `BridgeReconfigLive.cfg`, `WithdrawalCompletes` fails: the
+  Guardian is down while Hashi moves from epoch 0 to 2, the leader sets its
+  gate at epoch 2, the Guardian comes back on committee 0, and a withdrawal
+  committed and MPC-signed at epoch 2 never gets a Guardian signature. An
+  honest leader commits no new `W` while one is unsigned (R4), so all
+  withdrawals stop. `BridgeReconfigLiveFix.cfg` (fix on) passes
+  `WithdrawalCompletes`, `RequestServed`, `DepositCompletes`,
+  `HashiCatchesUp`, and `GuardianCatchesUp`.
+- **Node behaviour while stalled:** the Guardian returns `Unauthenticated`
+  for the epoch mismatch, which the leader counts as "GuardianUnavailable"
+  and retries every checkpoint with no backoff (`leader/guardian.rs:90-104`).
+  The check runs before the Guardian's limiter, so retries consume no
+  tokens (`standard_withdrawal.rs:37-58`).
 - **Mechanism:** each node reconciles the Guardian's committee at most once
   per Hashi epoch while leader (`leader/guardian.rs:30-51`). If
   `GetGuardianInfo` reports no committee, as a standby or not-yet-activated
@@ -422,5 +438,5 @@ are review-confirmed unless marked otherwise.
 | R11 | Limiter config is per Guardian session; activation only caps tokens. A rotation can raise `max` or `rate`. | Guardian sessions |
 | R12 | Limiter recovery at activation reads only two hour directories. Writer-ahead clock skew above about 1 hour can roll back `seq` and tokens or allow a second activation. | Guardian sessions |
 | R13 | Proxy replay data is kept 30 days; a retry after that consumes tokens again. | Guardian sessions |
-| R14 | Repeated reconfigurations re-approve deposits and restart the delay, which can starve confirmation. | `Bridge` |
+| R14 | Repeated reconfigurations re-approve deposits and restart the delay, which can starve confirmation. | Analysed, not a separate issue. Only a completed reconfiguration triggers re-approval; an abort keeps the epoch, so stored certs stay valid (`leader/deposits.rs:64-76`, `deposit.move:159-161`). Completions happen at most once per Sui epoch (about 24 h) and the delay is 10 min, so starvation needs a reconfiguration pending most of each epoch. That is the bridge stall of PROTOCOL.md 2.4 (for example F1), in which unconfirmed requests also expire after 24 h and must be resubmitted. `BridgeReconfigLiveFix.cfg` checks `DepositCompletes` with re-approval across epochs. |
 | R16 | Seal signatures are kept in memory only; after a restart a node may sign a different dealer-set digest. Liveness only. | `Presig` (batches) |
