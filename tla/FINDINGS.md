@@ -554,6 +554,20 @@ exclude key material older than the erasure window?
   shows the hold is bounded near 15 minutes, another option is to record
   that bound as the late-durability budget and raise `Q` to match.
 
+## Reorgs
+
+Not modelled separately. The Bitcoin model has a mempool level and a final
+level, and a transaction that is mined but not final behaves like a mempool
+transaction: it can be evicted or lose to a conflicting spend. That covers
+reorgs shallower than `bitcoin_confirmation_threshold`. A deeper reorg
+breaks the stated assumption; its effect on a deposit matches the recovery
+spend in F7 (`RecordSound` and `Backing` fail). The node handles header
+reorgs by dropping scans for disconnected blocks
+([`monitor.rs:1085-1105`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/btc_monitor/monitor.rs#L1085-L1105)),
+but nothing re-checks a deposit between approval and `confirm_deposit`
+(`PROTOCOL.md` 6). The threshold is governable, so lowering it weakens the
+assumption directly.
+
 ## Review findings not yet modelled
 
 These come from the sub-agent code review ([`PROTOCOL.md`](PROTOCOL.md) section 12). They
@@ -563,7 +577,7 @@ are review-confirmed unless marked otherwise.
 |---|---|---|
 | R3 | The Guardian-request certificate is signed after checking only `W` exists and the timestamp. The limiter check happens later, at finalize, after the Guardian has consumed tokens. | Composed in `BridgeLimiter`: `GsigLogged` and `FinalizedLogged` hold. A finalize refused by follower mirrors is retried; the proxy replays the logged signatures, so tokens are not debited again, and mirrors are snapped after about 5 minutes ([`cache.rs:161-170`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi-guardian-proxy/src/node/cache.rs#L161-L170), [`guardian_limiter.rs:244-283`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/guardian_limiter.rs#L244-L283)). Liveness was not model-checked, because the limiter clock is bounded. |
 | R4 | "One unsigned `W` at a time" is enforced only off chain. Concurrent leaders can commit several. A `W` that never becomes fully signed blocks all later commits by honest leaders. | Modelled. Consequences in F9 ([`BridgeReconfigLive.cfg`](BridgeReconfigLive.cfg)) and F12 ([`BridgeLimiterRotateStuck.cfg`](BridgeLimiterRotateStuck.cfg)). |
-| R7 | Change outputs are not validated on chain (address, amount, txid). Relies on an honest 2/3. | `Bridge` |
+| R7 | Change outputs are not validated on chain (address, amount, txid). Relies on an honest 2/3. | Covered by `Bridge`. With honest certificates ([`Bridge.cfg`](Bridge.cfg)) change goes to a Hashi address and all safety holds. With arbitrary certificates ([`BridgeByzCerts.cfg`](BridgeByzCerts.cfg)) only the chain-only invariants hold, as expected. No separate model is needed. |
 | R10 | A member with 5% weight can pause alone; more than 1/3 can block unpause. | `Reconfig` / governance |
 | R11 | Limiter config is per Guardian session; activation only caps tokens. A rotation can raise `max` or `rate`. | Lowering is modelled as F12. Raising `max` or `rate` loosens the rate bound and is a policy question for the operator. |
 | R12 | Limiter recovery at activation reads only two hour directories. Writer-ahead clock skew above about 1 hour can roll back `seq` and tokens or allow a second activation. | Modelled in F13 ([`GuardianSessionsWriterAhead.cfg`](GuardianSessionsWriterAhead.cfg), [`GuardianSessionsRollback.cfg`](GuardianSessionsRollback.cfg)). Correction: recovery reads the newest non-empty hour and the one before it, not a window around the current time. |
