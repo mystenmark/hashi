@@ -123,13 +123,18 @@
 
 ## Remaining
 
-- Guardian liveness: `GuardianLimiterLive.cfg` (consumed implies finalized,
-  stall reconcile fair, clock bounded at 3) is running; record the result.
 - F13: experiment (PUT through a byte-trickling proxy to a test bucket) to
   settle the hold bound. Needs a bucket and the user's go-ahead.
 - After the full system model: revisit `tla/FINDINGS.md` with code owners.
 
 ## Done in this pass
+
+- Guardian liveness: holds on `GuardianLimiterSeq` (seq-only abstraction),
+  with refinement from `GuardianLimiter` checked on small configs. The
+  full-model liveness run was stopped at 59M states.
+- `GuardianSessions` now has withdrawal ids: the host alone releases two
+  withdrawals at one seq (F13).
+- `reduction/`: F1 and R10 margins on mainnet weights.
 
 - `DkgRotation.tla`: removed Byzantine dealers in the rotation that removes
   them. One alone cannot block; one plus one offline new member can; two
