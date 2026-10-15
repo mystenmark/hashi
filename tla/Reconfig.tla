@@ -273,4 +273,11 @@ GuardianNotAhead == gEpoch <= hashi
 HashiCatchesUp == <>[](hashi = sui)
 GuardianCatchesUp == <>[](gEpoch = hashi)
 
+\* Assume-guarantee link to key generation: once every committee that forms
+\* can complete (DkgRotation, F1 margins), Hashi catches up with Sui even
+\* after earlier aborts.
+EventuallyCanComplete == <>[](pend # None => canComplete)
+CatchesUpIfKeygenCompletes == EventuallyCanComplete => HashiCatchesUp
+GuardianFollowsIfKeygenCompletes == EventuallyCanComplete => GuardianCatchesUp
+
 =============================================================================
