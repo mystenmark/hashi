@@ -151,19 +151,20 @@ checked), **review-confirmed** (reviewers traced it in code; no model yet),
 The stranded-withdrawal sequence that was F6 is the aftermath of F7 and is
 described there.
 
-### F7. Past committees can spend pool UTXOs older than 60 days without the Guardian
+### F7. The Guardian's protection of a pool UTXO lapses after 60 days
 
 - **Status:** review-confirmed design analysis; the aftermath is
-  model-confirmed. Severity: theft of idle pool funds by a past committee,
-  bypassing the Guardian and the rate limiter, followed by stranded
-  withdrawals for unrelated users.
+  model-confirmed. Severity: a compromised or colluding committee (current,
+  or past with retained key material) can spend idle pool funds without the
+  Guardian or the rate limiter; unrelated users' withdrawals are stranded
+  afterwards.
 - **Model:** `Bridge.tla` via `MC_Bridge.tla`. `BridgeRecovery.cfg`
   (`RecordSound` fails), `BridgeRecoveryBacking.cfg` (`Backing` fails), and
   `BridgeLiveRecovery.cfg` (`WithdrawalCompletes` fails) show the effect of a
   recovery spend. The model does not represent committees or key shares;
-  the three facts below come from the code and design docs.
+  the facts below come from the code and design docs.
 
-**Three facts.**
+**Facts.**
 
 1. **Recovery leaf.** Every pool UTXO, deposit and change alike, is
    `tr(NUMS, {multi_a(2, guardian, h), and_v(older(60 days), pk(h))})`
@@ -173,8 +174,7 @@ described there.
 2. **Rotation keeps the key.** Key rotation reshares the same group key; the
    new key must equal the old one (`mpc_except_signing.rs:4936-4945`,
    `committee_set.move:501`). Shares from any past committee that meet that
-   committee's threshold therefore reconstruct today's key. Honest nodes
-   prune old epoch data (`service.rs:363`); colluding members need not.
+   committee's threshold reconstruct today's key.
 3. **Refresh is opportunistic.** Only spending a UTXO resets its 60-day
    clock. Old UTXOs (more than 4,320 blocks, about 30 days;
    `utxo_pool/mod.rs:66`) are prioritised only as extra consolidation inputs
@@ -182,14 +182,32 @@ described there.
    the fee rate is below the high threshold, and the batch is under its
    per-request input cap (`utxo_pool/mod.rs:880-893`). No dedicated refresh
    transaction exists.
+4. **Old key material is erased on a schedule.** Shares are rebuilt from a
+   node's per-epoch encryption keys plus dealer and rotation messages. The
+   live database keeps those for the target, previous, and preceding
+   committees plus 7 epochs (`db.rs:627-655`, `service.rs`
+   `build_pruning_references`). Epoch backups contain them
+   (`db.rs:131-148`) and are deleted locally after 14 days, 30 for the
+   newest (`backup.rs:50-52`); the documented S3 lifecycle target is also
+   14 days (`design/docs/node-backup.mdx`). The same doc says "Keep
+   longer-term copies elsewhere", does not sweep a decommissioned host's
+   archives, and notes S3 expiry is "not guaranteed deletion on day 14".
 
 **Consequence.** The Guardian exists "to protect against vulnerabilities and
-against malicious past committees" (`design/docs/guardian.mdx`). That
-protection lasts 60 days per UTXO. After that, any group holding threshold
-weight in any past committee can spend the UTXO directly on Bitcoin. Idle
-funds are the most exposed: in a quiet period, or while high fees disable
-consolidation, pool UTXOs age past 60 days. The set of groups that could do
-this grows with every epoch.
+against malicious past committees" (`design/docs/guardian.mdx`). For any
+UTXO older than 60 days that protection is gone:
+
+- **Current committee.** Members holding threshold weight who collude, or
+  whose nodes are compromised, can spend it directly on Bitcoin. This is
+  the committee compromise the Guardian is meant to stop.
+- **Past committees.** With the erasure policy followed, old material is
+  gone within about 2-4 weeks, before the 60-day delay opens. Members who
+  kept it, or material that survived in long-term backup copies,
+  decommissioned hosts, or unexpired S3 versions, can do the same. The set
+  of such groups grows with every epoch.
+
+Idle funds are the most exposed: in a quiet period, or while high fees
+disable consolidation, pool UTXOs age past 60 days.
 
 **Aftermath: stranded withdrawals.** Hashi does not detect the spend. The
 stolen outputs' pool records stay Available, and the next withdrawals that
@@ -278,9 +296,9 @@ other inputs, remove `C`, and re-mint or refund `R`'s hBTC. Treat
   committee holds, or a much longer delay.
 
 **Open questions.** Is a past committee's threshold the reduced-weight `t`
-of that epoch? Do honest nodes erase old key shares, not only protocol
-messages, after rotation? How large does the pool's share of UTXOs older
-than 60 days get in practice?
+of that epoch? How large does the pool's share of UTXOs older than 60 days
+get in practice? Should the backup doc's advice to keep longer-term copies
+exclude key material older than the erasure window?
 
 ### F8. Pause does not stop Bitcoin outflow of a committed withdrawal
 
