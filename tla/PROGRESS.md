@@ -112,7 +112,11 @@
 - Validation: F1 reproduced in a Rust test on branch
   `mlogan-f1-dkg-complaint-test` (see FINDINGS.md F1). F2 reproduced on
   `mlogan-f2-guardian-double-sign-test`. F9 reproduced on
-  `mlogan-f9-guardian-reconcile-gate-test`.
+  `mlogan-f9-guardian-reconcile-gate-test`. An F12 test is in progress on
+  `mlogan-f12-guardian-max-lowering-test` (sub-agent).
+- F13 host hold: checked by code and AWS docs. The hold is bounded near
+  15 min only if headers and body share one TLS record; otherwise no
+  documented bound. Writer retries the same key; model unaffected.
 
 ## Remaining
 
@@ -121,4 +125,7 @@
   arises only from a digest mismatch plus a code change.
 - Guardian: liveness "consumed implies finalized" (needs an unbounded
   clock abstraction).
+- F13: experiment (PUT through a byte-trickling proxy to a test bucket) to
+  settle the hold bound. Needs a bucket and the user's go-ahead.
+- Bridge: reorgs and R7. Governance: R10. DkgOutputs: rotation.
 - After the full system model: revisit `tla/FINDINGS.md` with code owners.
