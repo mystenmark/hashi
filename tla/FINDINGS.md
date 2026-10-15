@@ -941,6 +941,60 @@ exclude key material older than the erasure window?
   shows the hold is bounded near 15 minutes, another option is to record
   that bound as the late-durability budget and raise `Q` to match.
 
+### F14. Presignature batch skips accumulate and can stall MPC signing for an epoch
+
+- **Status:** model-confirmed mechanism; how often skips happen is unknown.
+  Severity: liveness of all withdrawal signing until the next completed
+  reconfiguration (about one Sui epoch).
+- **Threat model:** no adversary is needed. A node skips a batch for
+  node-local reasons: its AVID round state for a dealer is missing or
+  differs, retrieval fails, or a dealer has zero reduced weight in its view
+  ([`mpc_except_signing.rs:3825-3990`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/mpc/mpc_except_signing.rs#L3825-L3990)).
+  Round state is persisted ([`db.rs:488`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/db.rs#L488)), so a plain
+  restart does not cause this; database loss, a restore from an old backup,
+  network faults during retrieval, or bugs do. A transient cause heals when
+  the node retries the batch on a later signing attempt; a persistent one
+  lasts the epoch. Byzantine members cannot cause a skip directly, since a
+  certified AVID dealing is retrievable, but by refusing to sign seals they
+  shrink the margin.
+- **Model:** [`MpcSigning.tla`](MpcSigning.tla) (7 unit-weight members, one
+  Byzantine, `t = 3`, seal quorum 5, two batches of 2, two withdrawals of 2
+  inputs). Property `SigningCompletes`: every committed withdrawal gets all
+  input signatures recorded.
+  - [`MpcSigning.cfg`](MpcSigning.cfg) (no skips) and
+    [`MpcSigningOne.cfg`](MpcSigningOne.cfg) (one skipping node): hold.
+  - [`MpcSigningTwoSpread.cfg`](MpcSigningTwoSpread.cfg): fails with at
+    most one skipper per batch. `h2` skips batch 0 and `h1` skips batch 1.
+    Batch 1 then has 4 builders against a seal quorum of 5, never seals,
+    and the withdrawal allocated in it stays unsigned for the epoch.
+  - [`MpcSigningTwoSpreadEpoch.cfg`](MpcSigningTwoSpreadEpoch.cfg): holds
+    when an epoch change follows and the skips do not recur. The leader
+    reallocates the stale inputs.
+- **Mechanism:**
+  1. A node that skips batch `k` discards it
+     ([`service.rs:831-837`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/mpc/service.rs#L831-L837)).
+  2. Batches install only in order
+     ([`signing.rs:428-470`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/mpc/signing.rs#L428-L470)), and the
+     refill always asks for the next installable batch
+     ([`signing.rs:542-555`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/mpc/signing.rs#L542-L555)). The node keeps
+     retrying batch `k`, so it builds, seals, and signs nothing after `k`
+     in that epoch.
+  3. Skips on different batches therefore add up. Batch `k` can seal only
+     if honest nodes that skipped none of batches `0..k` hold the seal
+     quorum (2/3), and its inputs can be signed only if those nodes hold
+     `t`.
+  4. `commit_withdrawal_tx` allocates indices regardless of what exists
+     (`PROTOCOL.md` 8.3), so withdrawals keep committing into batches that
+     can never seal, and R4 then blocks later commits.
+- **Margin:** cumulative skipping weight above `W/3` minus the weight of
+  members that refuse to sign seals stops signing. With no Byzantine
+  weight that is about a third of stake; near the `f` bound it is close to
+  zero.
+- **Fix directions:** let a node that skipped batch `k` adopt the sealed
+  digest and rebuild from the certified dealings, or let later batches
+  install past a skipped one; alert on discarded batches; give the leader
+  a way to reallocate indices that fall in a batch that cannot seal.
+
 ## Reorgs
 
 Not modelled separately. The Bitcoin model has a mempool level and a final
