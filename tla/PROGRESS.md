@@ -73,6 +73,19 @@
   - `ReconfigLiveTransient.cfg`: fails at the last Sui epoch (R9, F11).
   - `ReconfigGuardianLive.cfg`: GuardianCatchesUp fails (F9).
   - Not modelled: genesis, committee membership changes, governance votes.
+- F9 fix switch in `Reconfig` (`NoCommitteeFails`); reconcile is strongly
+  fair. `ReconfigGuardianLiveFix.cfg` passes.
+- `BridgeReconfig` (via `MC_BridgeReconfig.tla`): Reconfig drives Bridge's
+  epoch and reconfiguring flag; the Guardian signs only on the current
+  Hashi committee.
+  - `BridgeReconfig.cfg`: Bridge and Reconfig safety plus
+    `GuardianSignsCompleted` pass, 295k states. Probes reach Guardian
+    signing, confirmation, and deposit confirmation after an epoch change.
+  - `BridgeReconfigLive.cfg`: `WithdrawalCompletes` fails (F9 consequence).
+  - `BridgeReconfigLiveFix.cfg`: all bridge and reconfig liveness passes.
+  - `BridgeReconfigTwo.cfg` (two requests, two W): passes, 18.2M
+    states.
+  - R14 analysed: not separate from the PROTOCOL.md 2.4 stall.
 - Validation: F1 reproduced in a Rust test on branch
   `mlogan-f1-dkg-complaint-test` (see FINDINGS.md F1). F2 reproduced on
   `mlogan-f2-guardian-double-sign-test`. F9 reproduced on
@@ -83,6 +96,7 @@
 - `Presig`: result of full config (`Presig.cfg`, MaxIndex 3, MaxRand 4).
   Consider modelling batches and seals explicitly so the residual case
   arises only from a digest mismatch plus a code change.
+- Composition: `Bridge` with `GuardianLimiter` (R3, R4).
 - Guardian: model sessions, heartbeat fence, S3 durability, and activation
   (safety 19); committee chain and proxy handoff gate (safety 16); liveness
   "consumed implies finalized".
