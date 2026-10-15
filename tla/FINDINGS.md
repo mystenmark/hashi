@@ -466,6 +466,62 @@ exclude key material older than the erasure window?
   exceeds the Guardian's max and add an on-chain path to unlock its inputs
   and restore its requests.
 
+### F13. The Guardian's single-writer fence rests on a host that does not delay writes
+
+- **Status:** model-confirmed as a boundary; the host capability needs
+  confirmation. Severity: limiter bound (safety 18, 19) under a malicious
+  host; at most one record per session handover.
+- **Model:** `GuardianSessions.tla` (time in minutes, Q = 10, budget 1,
+  attempt timeout 5). Session `a` is active at time 0; `b` may initialise
+  and activate later. Results:
+  - `GuardianSessions.cfg` (equal clocks, no late durability): all pass,
+    33.1M states.
+  - `GuardianSessionsAhead1.cfg` (`b`'s clock 1 minute ahead): pass, 39.8M
+    states.
+  - `GuardianSessionsAhead2.cfg` (2 minutes ahead): `UniqueSeq` fails.
+  - `GuardianSessionsLate.cfg` (equal clocks, a timed-out PUT lands up to
+    2 minutes after its deadline): `UniqueSeq` fails.
+  - `GuardianSessionsWriterAhead.cfg` (`a`'s clock 130 minutes ahead):
+    `OneWriter` fails, because `a`'s heartbeats fall outside `b`'s
+    three-hour scan.
+  These match README assumptions 1 and 4 exactly: reader-ahead skew plus
+  post-deadline durability must stay within the 1-minute budget.
+- **Trace (late durability):** `a` heartbeats last at minute 0, starts a
+  withdraw write for seq 0 at minute 3 (3 + 5 < 0 + 10 - 1), and the host
+  holds the PUT. At minute 10, `b` sees `a` quiet, activates, and recovers
+  next seq 0. `a`'s PUT lands at minute 10. `b` writes its own seq 0.
+- **Why the host can do this:** the enclave runs TLS itself, but its S3
+  traffic leaves through VSOCK forwarders on the host
+  (`s3_client.rs:139-160`). The host cannot read or change a PUT, but can
+  hold it. The README says "The S3 bucket operator is untrusted"
+  (`hashi-guardian/README.md:5`). Assumption 4 ("S3 does not make a
+  timed-out request durable arbitrarily later") is about S3; it does not
+  say what bounds a host-held request. To confirm: S3 rejects SigV4
+  requests whose signed time is more than 15 minutes from its own clock
+  (`RequestTimeTooSkewed`), which would bound the hold near 15 minutes, far
+  above the 1-minute budget.
+- **Consequence:** the late record is durable, so the proxy can replay its
+  signatures. The new session recovered its limiter without that debit,
+  so outflow can exceed the rate bound by that record's amount (at most
+  `max`). Two records share a seq; the proxy index does not detect the same
+  seq with different wids (`widlog.rs:96-125`). Each handover can leak at
+  most one record, because the old session's writes are serialized and it
+  panics on timeout. Handovers need the key provisioners
+  (`ProvisionerInit`), which limits repetition.
+- **Clock skew over an hour (R12):** a writer clock more than about an hour
+  ahead hides its heartbeats from the activator (`WriterAhead`). The same
+  skew also breaks limiter recovery. A record written with a far-ahead
+  clock lands in a future hour directory, and recovery reads only the
+  newest non-empty hour and the one before it. A later session then
+  recovers a low seq and reuses seqs. This second path was derived from
+  `limiter_recovery.rs:48-110`; it was not model-checked.
+- **Fix directions:** make the fence independent of delivery time. For
+  example, the reader could reject records whose signed timestamp is after
+  the writer's last heartbeat plus `Q - Budget - Attempt`, or recovery could
+  scan all hours whose records could still be durable. Alternatively,
+  record the 15-minute bound as the late-durability budget and raise `Q`
+  to match.
+
 ## Review findings not yet modelled
 
 These come from the sub-agent code review (`PROTOCOL.md` section 12). They
@@ -478,7 +534,7 @@ are review-confirmed unless marked otherwise.
 | R7 | Change outputs are not validated on chain (address, amount, txid). Relies on an honest 2/3. | `Bridge` |
 | R10 | A member with 5% weight can pause alone; more than 1/3 can block unpause. | `Reconfig` / governance |
 | R11 | Limiter config is per Guardian session; activation only caps tokens. A rotation can raise `max` or `rate`. | Lowering is modelled as F12. Raising `max` or `rate` loosens the rate bound and is a policy question for the operator. |
-| R12 | Limiter recovery at activation reads only two hour directories. Writer-ahead clock skew above about 1 hour can roll back `seq` and tokens or allow a second activation. | Guardian sessions |
-| R13 | Proxy replay data is kept 30 days; a retry after that consumes tokens again. | Guardian sessions |
+| R12 | Limiter recovery at activation reads only two hour directories. Writer-ahead clock skew above about 1 hour can roll back `seq` and tokens or allow a second activation. | Partly modelled in F13. Correction: recovery reads the newest non-empty hour and the one before it, not a window around the current time. The second-activation path is `GuardianSessionsWriterAhead.cfg`. |
+| R13 | Proxy replay data is kept 30 days; a retry after that consumes tokens again. | Not modelled. Confirmed by code reading (`widlog.rs:66, 218-219`, `cache.rs:172-181`). The enclave signs again only if the request's seq equals `next_seq`. The second debit over-counts outflow, which is conservative; it needs a `W` that is Guardian-signed but not finalized for 30 days. |
 | R14 | Repeated reconfigurations re-approve deposits and restart the delay, which can starve confirmation. | Analysed, not a separate issue. Only a completed reconfiguration triggers re-approval; an abort keeps the epoch, so stored certs stay valid (`leader/deposits.rs:64-76`, `deposit.move:159-161`). Completions happen at most once per Sui epoch (about 24 h) and the delay is 10 min, so starvation needs a reconfiguration pending most of each epoch. That is the bridge stall of PROTOCOL.md 2.4 (for example F1), in which unconfirmed requests also expire after 24 h and must be resubmitted. `BridgeReconfigLiveFix.cfg` checks `DepositCompletes` with re-approval across epochs. |
 | R16 | Seal signatures are kept in memory only; after a restart a node may sign a different dealer-set digest. Liveness only. | `Presig` (batches) |
