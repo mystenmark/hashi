@@ -1081,6 +1081,32 @@ property does not. Deposits involve neither the Guardian nor MPC signing.
 The deposit-only configs drop withdrawals to keep TLC's liveness check
 small; deposits do not read withdrawal state except through the pool.
 
+## End-to-end reconfiguration liveness
+
+Property: after each Sui epoch change, Hashi eventually completes a
+reconfiguration to the current Sui epoch (`HashiCatchesUp`), the Guardian
+adopts that committee (`GuardianCatchesUp`), the new committee can sign,
+and bridge operations resume. A pending reconfiguration blocks every BTC
+committee step except `confirm_withdrawal` (`PROTOCOL.md` 2.4), so this
+chain also gates the withdrawal and deposit chains.
+
+| Link | Established by | Conditions |
+|---|---|---|
+| `start_reconfig` happens after the Sui epoch change | [`ReconfigLive.cfg`](ReconfigLive.cfg) passes; [`ReconfigLiveTransient.cfg`](ReconfigLiveTransient.cfg) fails (R9, F11) | Start attempts do not all fail transiently, or someone calls the permissionless `start_reconfig`; `reconfig_hold` eventually clear |
+| Committee formation | Code: the pending committee is formed from Sui voting power, skipping unregistered and ignored members | Members registered encryption keys; ignore flags apply at formation, not to a pending committee |
+| Key generation (DKG or rotation) can complete | [`DkgOutputs.tla`](DkgOutputs.tla), [`DkgRotation.tla`](DkgRotation.tla), [`reduction/`](reduction/) (mainnet weights) | F1 margins: a Byzantine dealer's stake plus offline stake below about 1.8% (one dealer), and not two Byzantine dealers; or complaints allow-listed |
+| Completion and `end_reconfig` within the Sui epoch; abort and retry otherwise | [`ReconfigLiveKeygen.cfg`](ReconfigLiveKeygen.cfg): `EventuallyCanComplete => HashiCatchesUp` passes with key generation allowed to fail; [`ReconfigLiveKeygenFails.cfg`](ReconfigLiveKeygenFails.cfg) fails without the assumption | Key generation eventually succeeds in some epoch; each failed attempt costs one Sui epoch |
+| Outgoing committee signs the handoff | `SignHandoff` fairness in `Reconfig` (assumption) | 2/3 of the outgoing committee is online at reconfiguration; heavy validator churn can break this |
+| Guardian adopts the new committee | [`ReconfigGuardianLiveKeygen.cfg`](ReconfigGuardianLiveKeygen.cfg) passes with the F9 fix; [`ReconfigGuardianLive.cfg`](ReconfigGuardianLive.cfg) fails without it (F9); the proxy gate keeps aborted committees out (F10) | F9 fix |
+| New committee can sign | [`MpcSigningTwoSpreadEpoch.cfg`](MpcSigningTwoSpreadEpoch.cfg): batches regenerate and the leader reallocates stale slots | Nonce generation admits weight `>= W - f`; batch skips below the seal margin (F14) |
+| Bridge operations resume | [`BridgeReconfigLiveFix.cfg`](BridgeReconfigLiveFix.cfg): `WithdrawalCompletes`, `RequestServed`, `DepositCompletes`, `HashiCatchesUp`, `GuardianCatchesUp` pass | F9 fix; deposits re-approved by the new committee (R14) |
+| The key is preserved | Code: rotation must reproduce the same group key (`mpc_except_signing.rs:4936-4945`, `committee_set.move:501`) | Safety, not liveness |
+
+Without governance the chain has no fallback at genesis: no committee
+exists to vote `IgnoreMember`, so only the complaint allow-list helps
+(F1). After genesis each failed attempt costs about one Sui epoch, during
+which the bridge is stalled.
+
 ## Reorgs
 
 Not modelled separately. The Bitcoin model has a mempool level and a final
