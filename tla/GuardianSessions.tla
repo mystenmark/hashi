@@ -26,6 +26,13 @@
 (* Heartbeats are abstracted to the first and last wall times, with one    *)
 (* heartbeat assumed at every wall minute in between. Session First is     *)
 (* active at time 0; the others start uninitialised.                       *)
+(*                                                                         *)
+(* Withdrawals 1..NWids are signed in order: an honest leader asks only    *)
+(* for the oldest unfinalized one (R4). If a durable record for it exists, *)
+(* the proxy replays it and the leader finalizes; otherwise the active     *)
+(* session signs it. Object keys are (hour, seq, wid) and writes are       *)
+(* create-only: a confirmed write that finds a different record at its key *)
+(* panics the session (s3_client.rs verify_existing_write).                *)
 (***************************************************************************)
 EXTENDS Integers, FiniteSets
 
@@ -40,10 +47,11 @@ CONSTANTS
     HourLen,    \* minutes per S3 hour directory (60)
     LateDur,    \* a timed-out PUT may become durable this long after its deadline
     MaxTime,
-    MaxSeq
+    MaxSeq,
+    NWids       \* withdrawals the leader signs in order
 
 None == -1
-NoPend == [seq |-> None, start |-> None, wall |-> None]
+NoPend == [seq |-> None, wid |-> None, start |-> None, wall |-> None]
 
 VARIABLES
     t,
@@ -52,13 +60,16 @@ VARIABLES
     hbLast,     \* wall time of the last heartbeat, or None
     nseq,       \* the session's limiter next seq
     pend,       \* in-flight withdraw write [seq, start, wall], or NoPend
-    recs,       \* durable withdraw records [s, seq, wall, dur]
+    recs,       \* durable withdraw records [s, seq, wid, wall, dur]
+    fin,        \* withdrawals finalized; the leader's head is fin + 1
     actAt,      \* ghost: activation time, or None
     recov       \* ghost: [got, truth] next seq at activation
 
-vars == <<t, mode, hbFirst, hbLast, nseq, pend, recs, actAt, recov>>
+vars == <<t, mode, hbFirst, hbLast, nseq, pend, recs, fin, actAt, recov>>
 
 Wall(s) == t + Off[s]
+Head == fin + 1
+Key(r) == <<r.wall \div HourLen, r.seq, r.wid>>
 Hour(w) == w \div HourLen
 Max(S) == CHOOSE x \in S : \A y \in S : y <= x
 MinOf(a, b) == IF a < b THEN a ELSE b
@@ -77,18 +88,19 @@ Init ==
     /\ nseq = [s \in Sessions |-> 0]
     /\ pend = [s \in Sessions |-> NoPend]
     /\ recs = {}
+    /\ fin = 0
     /\ actAt = [s \in Sessions |-> IF s = First THEN 0 ELSE None]
     /\ recov = [s \in Sessions |-> [got |-> 0, truth |-> 0]]
 
 Tick ==
     /\ t < MaxTime
     /\ t' = t + 1
-    /\ UNCHANGED <<mode, hbFirst, hbLast, nseq, pend, recs, actAt, recov>>
+    /\ UNCHANGED <<mode, hbFirst, hbLast, nseq, pend, recs, actAt, recov, fin>>
 
 OperatorInit(s) ==
     /\ mode[s] = "none"
     /\ mode' = [mode EXCEPT ![s] = "standby"]
-    /\ UNCHANGED <<t, hbFirst, hbLast, nseq, pend, recs, actAt, recov>>
+    /\ UNCHANGED <<t, hbFirst, hbLast, nseq, pend, recs, actAt, recov, fin>>
 
 \* At most one heartbeat per minute. The first heartbeat has no fence.
 Heartbeat(s) ==
@@ -98,47 +110,58 @@ Heartbeat(s) ==
     /\ hbLast[s] # None => FenceOpen(s)
     /\ hbFirst' = [hbFirst EXCEPT ![s] = IF @ = None THEN Wall(s) ELSE @]
     /\ hbLast' = [hbLast EXCEPT ![s] = Wall(s)]
-    /\ UNCHANGED <<t, mode, nseq, pend, recs, actAt, recov>>
+    /\ UNCHANGED <<t, mode, nseq, pend, recs, actAt, recov, fin>>
 
 StartWrite(s) ==
     /\ mode[s] = "active"
     /\ pend[s] = NoPend
     /\ FenceOpen(s)
     /\ nseq[s] < MaxSeq
-    /\ pend' = [pend EXCEPT ![s] = [seq |-> nseq[s], start |-> t, wall |-> Wall(s)]]
-    /\ UNCHANGED <<t, mode, hbFirst, hbLast, nseq, recs, actAt, recov>>
+    /\ fin < NWids
+    /\ ~\E r \in recs : r.wid = Head
+    /\ pend' = [pend EXCEPT ![s] = [seq |-> nseq[s], wid |-> Head, start |-> t,
+                                     wall |-> Wall(s)]]
+    /\ UNCHANGED <<t, mode, hbFirst, hbLast, nseq, recs, actAt, recov, fin>>
 
 \* The PUT becomes durable. Before the deadline the enclave confirms it and
 \* advances its seq; after the deadline the enclave has already panicked.
 Durable(s) ==
-    /\ pend[s] # NoPend
-    /\ t <= pend[s].start + Attempt + LateDur
-    /\ recs' = recs \cup {[s |-> s, seq |-> pend[s].seq, wall |-> pend[s].wall,
-                           dur |-> t]}
+    LET p == pend[s]
+        new == [s |-> s, seq |-> p.seq, wid |-> p.wid, wall |-> p.wall, dur |-> t]
+        confirmed == mode[s] = "active" /\ t <= p.start + Attempt
+        clash == \E r \in recs : Key(r) = Key(new)
+    IN
+    /\ p # NoPend
+    /\ t <= p.start + Attempt + LateDur
     /\ pend' = [pend EXCEPT ![s] = NoPend]
-    /\ IF mode[s] = "active" /\ t <= pend[s].start + Attempt
-       THEN nseq' = [nseq EXCEPT ![s] = @ + 1]
-       ELSE UNCHANGED nseq
-    /\ UNCHANGED <<t, mode, hbFirst, hbLast, actAt, recov>>
+    /\ IF clash
+       THEN /\ UNCHANGED <<recs, nseq>>
+            /\ IF confirmed THEN mode' = [mode EXCEPT ![s] = "dead"]
+                            ELSE UNCHANGED mode
+       ELSE /\ recs' = recs \cup {new}
+            /\ IF confirmed THEN nseq' = [nseq EXCEPT ![s] = @ + 1]
+                            ELSE UNCHANGED nseq
+            /\ UNCHANGED mode
+    /\ UNCHANGED <<t, hbFirst, hbLast, fin, actAt, recov>>
 
 \* The attempt deadline passes unconfirmed: panic. The PUT may still land.
 Timeout(s) ==
     /\ pend[s] # NoPend /\ mode[s] # "dead"
     /\ t > pend[s].start + Attempt
     /\ mode' = [mode EXCEPT ![s] = "dead"]
-    /\ UNCHANGED <<t, hbFirst, hbLast, nseq, pend, recs, actAt, recov>>
+    /\ UNCHANGED <<t, hbFirst, hbLast, nseq, pend, recs, actAt, recov, fin>>
 
 \* A PUT that can no longer land is gone.
 Lost(s) ==
     /\ pend[s] # NoPend
     /\ t > pend[s].start + Attempt + LateDur
     /\ pend' = [pend EXCEPT ![s] = NoPend]
-    /\ UNCHANGED <<t, mode, hbFirst, hbLast, nseq, recs, actAt, recov>>
+    /\ UNCHANGED <<t, mode, hbFirst, hbLast, nseq, recs, actAt, recov, fin>>
 
 Kill(s) ==
     /\ mode[s] \in {"standby", "active"}
     /\ mode' = [mode EXCEPT ![s] = "dead"]
-    /\ UNCHANGED <<t, hbFirst, hbLast, nseq, pend, recs, actAt, recov>>
+    /\ UNCHANGED <<t, hbFirst, hbLast, nseq, pend, recs, actAt, recov, fin>>
 
 \* Newest heartbeat of s2 within the activator's three-hour window.
 NewestInWindow(s2, w) ==
@@ -165,10 +188,18 @@ Activate(s) ==
     /\ nseq' = [nseq EXCEPT ![s] = RecoveredSeq]
     /\ actAt' = [actAt EXCEPT ![s] = t]
     /\ recov' = [recov EXCEPT ![s] = [got |-> RecoveredSeq, truth |-> TrueSeq]]
-    /\ UNCHANGED <<t, hbFirst, hbLast, pend, recs>>
+    /\ UNCHANGED <<t, hbFirst, hbLast, pend, recs, fin>>
+
+\* The leader finalizes its head withdrawal once a durable record exists:
+\* from the confirmed write, or replayed by the proxy.
+Finalize ==
+    /\ fin < NWids
+    /\ \E r \in recs : r.wid = Head
+    /\ fin' = fin + 1
+    /\ UNCHANGED <<t, mode, hbFirst, hbLast, nseq, pend, recs, actAt, recov>>
 
 Next ==
-    \/ Tick
+    \/ Tick \/ Finalize
     \/ \E s \in Sessions :
           \/ OperatorInit(s) \/ Heartbeat(s) \/ StartWrite(s) \/ Durable(s)
           \/ Timeout(s) \/ Lost(s) \/ Kill(s) \/ Activate(s)
@@ -179,6 +210,10 @@ Spec == Init /\ [][Next]_vars
 (* Properties: safety 19 *)
 
 UniqueSeq == \A r1, r2 \in recs : r1.seq = r2.seq => r1 = r2
+
+\* Two different withdrawals released at one seq: the limiter debited one
+\* of them only, so outflow exceeds the rate bound.
+DistinctWidPerSeq == \A r1, r2 \in recs : r1.seq = r2.seq => r1.wid = r2.wid
 
 RecoveryExact == \A s \in Sessions : recov[s].got = recov[s].truth
 
