@@ -289,6 +289,98 @@ impl OnchainState {
         Ok((state, seed))
     }
 
+    /// A mirror at epoch 0 with no watcher, a committee with no members, an
+    /// unreachable Sui client, and `withdrawal_txns` as its only Bitcoin state.
+    #[cfg(test)]
+    pub(crate) fn new_for_test(withdrawal_txns: Vec<types::WithdrawalTransaction>) -> Self {
+        let mut committees = types::CommitteeSet::new(Address::ZERO, Address::ZERO);
+        committees.committees_mut().insert(
+            0,
+            hashi_types::committee::Committee::new(vec![], 0, 0, 5_000).into(),
+        );
+        let hashi = types::Hashi {
+            id: Address::ZERO,
+            committees,
+            config: types::Config {
+                config: BTreeMap::new(),
+                enabled_versions: Default::default(),
+                upgrade_cap: None,
+            },
+            epoch_config: move_types::Config::default(),
+            treasury: types::Treasury {
+                id: Address::ZERO,
+                treasury_caps: BTreeMap::new(),
+                metadata_caps: BTreeMap::new(),
+            },
+            bitcoin: Some(types::BitcoinCollections {
+                deposit_queue: types::DepositRequestQueue {
+                    id: Address::ZERO,
+                    requests: BTreeMap::new(),
+                    processed_id: Address::ZERO,
+                },
+                withdrawal_queue: types::WithdrawalRequestQueue {
+                    requests_id: Address::ZERO,
+                    requests: BTreeMap::new(),
+                    processed_id: Address::ZERO,
+                    withdrawal_txns_id: Address::ZERO,
+                    withdrawal_txns: withdrawal_txns
+                        .into_iter()
+                        .map(|txn| (txn.id, txn))
+                        .collect(),
+                    confirmed_txns_id: Address::ZERO,
+                },
+                utxo_pool: types::UtxoPool {
+                    utxo_records_id: Address::ZERO,
+                    utxo_records: BTreeMap::new(),
+                    spent_utxos_id: Address::ZERO,
+                },
+            }),
+            proposals: types::Proposals {
+                active_id: Address::ZERO,
+                executed_id: Address::ZERO,
+                active: BTreeMap::new(),
+                executed: BTreeMap::new(),
+            },
+            tob: types::Tob {
+                id: Address::ZERO,
+                buckets: BTreeMap::new(),
+            },
+            num_consumed_presigs: 0,
+        };
+        let (sender, _) = broadcast::channel(BROADCAST_CHANNEL_CAPACITY);
+        Inner {
+            ids: HashiIds {
+                package_id: Address::ZERO,
+                hashi_object_id: Address::ZERO,
+            },
+            client: Client::new("http://127.0.0.1:1").unwrap(),
+            sender,
+            checkpoint: watch::channel(CheckpointInfo::default()).0,
+            state_watermark: watch::channel(None).0,
+            state: RwLock::new(State {
+                package_versions: move_types::PackageVersions::default(),
+                hashi,
+                withdrawal_signed_at_ms: BTreeMap::new(),
+            }),
+            tls_private_key: None,
+            grpc_max_decoding_message_size: None,
+            metrics: None,
+            deposit_tracker: crate::deposit_tracker::DepositTracker::new_uninstrumented(),
+            local_limiter: OnceLock::new(),
+            guardian_reconcile_notify: Arc::new(tokio::sync::Notify::new()),
+        }
+        .pipe(Arc::new)
+        .pipe(Self)
+    }
+
+    /// Moves the clock to a checkpoint at `timestamp_ms`.
+    #[cfg(test)]
+    pub(crate) fn set_checkpoint_timestamp_ms_for_test(&self, timestamp_ms: u64) {
+        self.0
+            .checkpoint
+            .send_modify(|c| c.timestamp_ms = timestamp_ms);
+    }
+
     pub fn subscribe(&self) -> broadcast::Receiver<Notification> {
         self.0.sender.subscribe()
     }

@@ -1853,3 +1853,370 @@ mod tests {
         assert_eq!(union.keys().copied().collect::<Vec<_>>(), vec![1]);
     }
 }
+
+#[cfg(test)]
+mod lowered_guardian_max_tests {
+    use super::*;
+    use crate::guardian_limiter::LimiterStallTracker;
+    use crate::metrics::GUARDIAN_LIMITER_CALLSITE_LEADER_PRE_MPC;
+    use crate::metrics::GUARDIAN_LIMITER_OUTCOME_INSUFFICIENT_CAPACITY;
+    use crate::metrics::GUARDIAN_LIMITER_OUTCOME_SUCCESS;
+    use crate::onchain::types::OutputUtxo;
+    use crate::onchain::types::Utxo;
+    use crate::onchain::types::UtxoId;
+    use hashi_types::bitcoin_txid::BitcoinTxid;
+    use hashi_types::guardian::LimiterConfig;
+    use hashi_types::guardian::LimiterState;
+    use hashi_types::move_types::MpcSig;
+    use hashi_types::move_types::SigningBatch;
+    use hashi_types::proto;
+    use hashi_types::proto::guardian_service_server::GuardianService;
+    use hashi_types::proto::guardian_service_server::GuardianServiceServer;
+    use std::sync::Mutex;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+    use tonic::Request;
+    use tonic::Response;
+    use tonic::Status;
+
+    const INPUT_SATS: u64 = 10_000;
+    const CHANGE_SATS: u64 = 500;
+    const OUTFLOW_SATS: u64 = INPUT_SATS - CHANGE_SATS;
+    /// Timestamp of the last withdrawal the old guardian session signed.
+    const LAST_SIGNED_AT: u64 = 1_700_000_000;
+
+    /// Session A's policy. One second refills one W.
+    const OLD_CONFIG: LimiterConfig = LimiterConfig {
+        refill_rate: OUTFLOW_SATS,
+        max_bucket_capacity: 2 * OUTFLOW_SATS,
+    };
+
+    /// Session A's state after it signed one withdrawal of W's size at seq 0.
+    const OLD_STATE: LimiterState = LimiterState {
+        num_tokens_available: OUTFLOW_SATS,
+        last_updated_at: LAST_SIGNED_AT,
+        next_seq: 1,
+    };
+
+    /// A committed W with every input MPC-signed. `guardian_signed` marks it
+    /// finalized.
+    fn committed_withdrawal(guardian_signed: bool) -> WithdrawalTransaction {
+        WithdrawalTransaction {
+            id: Address::new([0x12; 32]),
+            txid: BitcoinTxid::new([0x34; 32]),
+            request_ids: vec![],
+            inputs: vec![Utxo {
+                id: UtxoId {
+                    txid: BitcoinTxid::new([0x56; 32]),
+                    vout: 0,
+                },
+                amount: INPUT_SATS,
+                derivation_path: None,
+            }],
+            withdrawal_outputs: vec![],
+            change_outputs: vec![OutputUtxo {
+                amount: CHANGE_SATS,
+                bitcoin_address: vec![0x78; 32],
+            }],
+            created_timestamp_ms: 0,
+            signed_timestamp_ms: None,
+            confirmed_timestamp_ms: None,
+            randomness: vec![],
+            signing: SigningBatch {
+                signatures: vec![MpcSig::Signed(vec![0; 64])],
+                epoch: 0,
+            },
+            guardian_signatures: guardian_signed.then(|| vec![vec![0; 64]]),
+        }
+    }
+
+    #[derive(Clone)]
+    struct StubGuardian {
+        limiter: Arc<Mutex<(LimiterConfig, LimiterState)>>,
+        withdrawal_calls: Arc<AtomicUsize>,
+    }
+
+    #[tonic::async_trait]
+    impl GuardianService for StubGuardian {
+        async fn get_guardian_info(
+            &self,
+            _: Request<proto::GetGuardianInfoRequest>,
+        ) -> Result<Response<proto::GetGuardianInfoResponse>, Status> {
+            let (config, state) = *self.limiter.lock().unwrap();
+            let signing_pub_key = ed25519_dalek::SigningKey::from_bytes(&[7; 32])
+                .verifying_key()
+                .to_bytes();
+            Ok(Response::new(proto::GetGuardianInfoResponse {
+                info: Some(proto::GuardianInfoData {
+                    signing_pub_key: Some(signing_pub_key.to_vec().into()),
+                    encryption_pubkey: Some(vec![0; 32].into()),
+                    limiter_config: Some(proto::LimiterConfig {
+                        refill_rate_sats_per_sec: Some(config.refill_rate),
+                        max_bucket_capacity_sats: Some(config.max_bucket_capacity),
+                    }),
+                    limiter_state: Some(proto::LimiterState {
+                        num_tokens_available_sats: Some(state.num_tokens_available),
+                        last_updated_at_secs: Some(state.last_updated_at),
+                        next_seq: Some(state.next_seq),
+                    }),
+                    ..Default::default()
+                }),
+                timestamp_ms: Some(1),
+            }))
+        }
+        async fn get_attested_guardian_info(
+            &self,
+            _: Request<proto::GetAttestedGuardianInfoRequest>,
+        ) -> Result<Response<proto::GetAttestedGuardianInfoResponse>, Status> {
+            Err(Status::unimplemented("stub"))
+        }
+        async fn setup_new_key(
+            &self,
+            _: Request<proto::SetupNewKeyRequest>,
+        ) -> Result<Response<proto::SignedSetupNewKeyResponse>, Status> {
+            Err(Status::unimplemented("stub"))
+        }
+        async fn confirm_ceremony(
+            &self,
+            _: Request<proto::SignedCeremonyConfirmationRequest>,
+        ) -> Result<Response<proto::CeremonyConfirmationResponse>, Status> {
+            Err(Status::unimplemented("stub"))
+        }
+        async fn rotate_kp_set(
+            &self,
+            _: Request<proto::BatchProvisionerRotateKpSetRequest>,
+        ) -> Result<Response<proto::SignedRotateKpSetResponse>, Status> {
+            Err(Status::unimplemented("stub"))
+        }
+        async fn operator_init(
+            &self,
+            _: Request<proto::OperatorInitRequest>,
+        ) -> Result<Response<proto::OperatorInitResponse>, Status> {
+            Err(Status::unimplemented("stub"))
+        }
+        async fn provisioner_init(
+            &self,
+            _: Request<proto::BatchProvisionerInitRequest>,
+        ) -> Result<Response<proto::ProvisionerInitResponse>, Status> {
+            Err(Status::unimplemented("stub"))
+        }
+        async fn provisioner_rotate_cert(
+            &self,
+            _: Request<proto::SignedProvisionerRotateCertRequest>,
+        ) -> Result<Response<proto::SignedProvisionerRotateCertResponse>, Status> {
+            Err(Status::unimplemented("stub"))
+        }
+        async fn operator_activate(
+            &self,
+            _: Request<proto::OperatorActivateRequest>,
+        ) -> Result<Response<proto::OperatorActivateResponse>, Status> {
+            Err(Status::unimplemented("stub"))
+        }
+        /// Refuses as the rotated guardian does, without a seq.
+        async fn standard_withdrawal(
+            &self,
+            _: Request<proto::SignedStandardWithdrawalRequest>,
+        ) -> Result<Response<proto::SignedStandardWithdrawalResponse>, Status> {
+            self.withdrawal_calls.fetch_add(1, Ordering::SeqCst);
+            Err(Status::resource_exhausted("rate limit exceeded"))
+        }
+        async fn update_committee(
+            &self,
+            _: Request<proto::SignedCommitteeTransition>,
+        ) -> Result<Response<proto::UpdateCommitteeResponse>, Status> {
+            Err(Status::unimplemented("stub"))
+        }
+        async fn update_committee_chain(
+            &self,
+            _: Request<proto::UpdateCommitteeChainRequest>,
+        ) -> Result<Response<proto::UpdateCommitteeResponse>, Status> {
+            Err(Status::unimplemented("stub"))
+        }
+    }
+
+    struct Harness {
+        leader: LeaderService,
+        guardian: StubGuardian,
+        _tmpdir: tempfile::TempDir,
+    }
+
+    impl Harness {
+        /// A leader whose mirror holds `txn`, seeded from a guardian still on
+        /// session A.
+        async fn new(txn: WithdrawalTransaction) -> Self {
+            let guardian = StubGuardian {
+                limiter: Arc::new(Mutex::new((OLD_CONFIG, OLD_STATE))),
+                withdrawal_calls: Arc::default(),
+            };
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let incoming = futures::stream::unfold(listener, |listener| async move {
+                let result = listener.accept().await.map(|(stream, _)| stream);
+                Some((result, listener))
+            });
+            tokio::spawn(
+                tonic::transport::Server::builder()
+                    .add_service(GuardianServiceServer::new(guardian.clone()))
+                    .serve_with_incoming(incoming),
+            );
+
+            let tmpdir = tempfile::tempdir().unwrap();
+            let mut config = crate::config::Config::new_for_testing();
+            config.db = Some(tmpdir.path().into());
+            let hashi = Hashi::new_with_registry(
+                crate::ServerVersion::new("unknown", "unknown"),
+                None,
+                config,
+                &prometheus::Registry::new(),
+            )
+            .unwrap();
+            hashi
+                .onchain_state
+                .set(crate::onchain::OnchainState::new_for_test(vec![txn]))
+                .unwrap();
+            let client = hashi
+                .new_guardian_client(&format!("http://{addr}"))
+                .unwrap();
+            hashi.guardian_client.set(Some(client)).unwrap();
+            assert!(hashi.try_seed_guardian_state().await);
+
+            Self {
+                leader: LeaderService::new(hashi),
+                guardian,
+                _tmpdir: tmpdir,
+            }
+        }
+
+        /// The operator activates session B with `new_max`. Its recovery
+        /// keeps A's seq and caps A's tokens to the new max.
+        async fn rotate_guardian_and_reconcile(&self, new_max: u64) -> LimiterConfig {
+            let config = LimiterConfig {
+                max_bucket_capacity: new_max,
+                ..OLD_CONFIG
+            };
+            *self.guardian.limiter.lock().unwrap() = (config, OLD_STATE.capped_to(&config));
+            self.leader
+                .inner
+                .reconcile_guardian_limiter(&mut LimiterStallTracker::default())
+                .await;
+            assert_eq!(self.limiter().config(), config);
+            config
+        }
+
+        fn limiter(&self) -> Arc<crate::guardian_limiter::LocalLimiter> {
+            self.leader.inner.local_limiter().unwrap()
+        }
+
+        /// The commit-time check applied to W against the leader's current policy.
+        fn commit_check(&self) -> anyhow::Result<()> {
+            crate::withdrawals::check_commitment_outflow(
+                INPUT_SATS,
+                &committed_withdrawal(false).change_outputs,
+                Some(self.limiter().config().max_bucket_capacity),
+            )
+        }
+
+        fn pre_mpc_validations(&self, outcome: &str) -> u64 {
+            self.leader
+                .inner
+                .metrics
+                .guardian_limiter_validate_total
+                .with_label_values(&[outcome, GUARDIAN_LIMITER_CALLSITE_LEADER_PRE_MPC])
+                .get()
+        }
+
+        fn guardian_withdrawal_calls(&self) -> usize {
+            self.guardian.withdrawal_calls.load(Ordering::SeqCst)
+        }
+
+        /// One leader attempt to finalize the mirrored W at a checkpoint at
+        /// `timestamp_secs`.
+        async fn finalize_at(&self, timestamp_secs: u64) -> anyhow::Result<()> {
+            let onchain = self.leader.inner.onchain_state();
+            onchain.set_checkpoint_timestamp_ms_for_test(timestamp_secs * 1000);
+            let txn = onchain.withdrawal_txns().pop().unwrap();
+            LeaderService::finalize_fully_signed_withdrawal(&self.leader.inner, &txn, &[]).await
+        }
+
+        /// Whether one commitment pass gets past the unsigned-W gate, seen
+        /// through the stale-entry pruning that follows the gate.
+        fn commitment_pass_reaches_requests(&mut self, checkpoint_timestamp_ms: u64) -> bool {
+            let stale = Address::new([0x9a; 32]);
+            self.leader.stuck_withdrawal_warned.insert(stale);
+            self.leader
+                .process_approved_withdrawal_requests(checkpoint_timestamp_ms);
+            assert!(self.leader.withdrawal_commitment_task.is_none());
+            !self.leader.stuck_withdrawal_warned.remove(&stale)
+        }
+    }
+
+    /// F12, leader side: W fit the max when committed. After the guardian
+    /// rotates to a max below W's outflow and the leader adopts it, the
+    /// leader's pre-guardian gate refuses W at every checkpoint, returns
+    /// `Ok`, and leaves W unsigned, which blocks every new commitment.
+    #[tokio::test]
+    async fn lowered_max_parks_a_committed_withdrawal_and_blocks_commitments() {
+        let mut h = Harness::new(committed_withdrawal(false)).await;
+        h.commit_check().expect("W fits session A's max");
+
+        let config = h.rotate_guardian_and_reconcile(OUTFLOW_SATS - 1).await;
+        assert!(h.commit_check().is_err(), "W would not be committed now");
+
+        for (attempt, timestamp_secs) in [
+            LAST_SIGNED_AT + 1,
+            LAST_SIGNED_AT + 60,
+            LAST_SIGNED_AT + 3_600,
+            LAST_SIGNED_AT + 30 * 86_400,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(
+                h.limiter().capacity_at(timestamp_secs),
+                config.max_bucket_capacity,
+                "the bucket is full"
+            );
+            h.finalize_at(timestamp_secs)
+                .await
+                .expect("the gate defers W to the next checkpoint");
+            assert_eq!(
+                h.pre_mpc_validations(GUARDIAN_LIMITER_OUTCOME_INSUFFICIENT_CAPACITY),
+                attempt as u64 + 1
+            );
+            assert_eq!(h.guardian_withdrawal_calls(), 0);
+            assert_eq!(h.limiter().next_seq(), 1);
+
+            let onchain = h.leader.inner.onchain_state();
+            assert_eq!(onchain.withdrawal_txns(), vec![committed_withdrawal(false)]);
+            assert!(onchain.has_unsigned_withdrawal_txn());
+            assert!(!h.commitment_pass_reaches_requests(timestamp_secs * 1000));
+        }
+        assert_eq!(h.pre_mpc_validations(GUARDIAN_LIMITER_OUTCOME_SUCCESS), 0);
+    }
+
+    /// Contrast: with a lowered max that still covers W, the same W passes the
+    /// gate and goes on toward the guardian; once W is guardian-signed,
+    /// commitment passes run again.
+    #[tokio::test]
+    async fn covering_max_lets_the_withdrawal_past_the_gate() {
+        let h = Harness::new(committed_withdrawal(false)).await;
+        h.rotate_guardian_and_reconcile(OUTFLOW_SATS).await;
+        let result = h.finalize_at(LAST_SIGNED_AT + 1).await;
+        assert_eq!(h.pre_mpc_validations(GUARDIAN_LIMITER_OUTCOME_SUCCESS), 1);
+        assert_eq!(
+            h.pre_mpc_validations(GUARDIAN_LIMITER_OUTCOME_INSUFFICIENT_CAPACITY),
+            0
+        );
+        // The empty committee yields no certificate for the guardian request.
+        let err = result.expect_err("the harness has no committee to certify W");
+        assert!(
+            err.to_string()
+                .contains("signature map must have at least one entry"),
+            "{err:#}"
+        );
+
+        let mut h = Harness::new(committed_withdrawal(true)).await;
+        assert!(!h.leader.inner.onchain_state().has_unsigned_withdrawal_txn());
+        assert!(h.commitment_pass_reaches_requests((LAST_SIGNED_AT + 1) * 1000));
+    }
+}
