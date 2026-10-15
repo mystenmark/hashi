@@ -94,6 +94,12 @@ SeqRateBound == L!SeqRateBound
 \* Bridge's Guardian signatures are exactly the enclave's logged records.
 GsigLogged == gsig = {r.wid : r \in log}
 
+\* The limiter's ready set is Bridge's MPC-recorded, unfinalized withdrawals.
+\* With GsigLogged, GuardianLimiterSeq's ReadyConsumed becomes Bridge's
+\* GuardianSigns.
+ReadyIsMpcRec ==
+    \A w \in Wids : (w \in ready) <=> (wtx[w].st = "signing" /\ wtx[w].mpcRec)
+
 \* A finalized withdrawal was logged by the Guardian.
 FinalizedLogged ==
     \A w \in Wids : wtx[w].st \in {"full", "conf"} => L!HasLog(w)

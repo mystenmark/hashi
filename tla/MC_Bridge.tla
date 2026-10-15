@@ -29,5 +29,13 @@ PaidConfirmed(q) == \E w \in Wids : q \in wtx[w].reqs /\ wtx[w].st = "conf"
 RequestPaid ==
     \A q \in Reqs : (wreq[q] = "req") ~> (wreq[q] = "canc" \/ PaidConfirmed(q))
 
+\* Bridge without fairness on GuardianSign. The Guardian's behaviour comes
+\* instead from GuardianSigns, which GuardianLimiterSeq (ReadyConsumed) and
+\* BridgeLimiter (ReadyIsMpcRec, GsigLogged) establish.
+LiveSpecNoGuardian == Spec /\ OpFairness /\ WF_vars(EndReconfig)
+GuardianSigns ==
+    \A w \in Wids : (wtx[w].st = "signing" /\ wtx[w].mpcRec) ~> (w \in gsig)
+RequestPaidIfGuardianSigns == GuardianSigns => RequestPaid
+
 NeverBothWithdrawn == \E q \in Reqs : wreq[q] # "comm"
 =============================================================================

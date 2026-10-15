@@ -31,6 +31,7 @@ VARIABLES
 vars == <<gSeq, log, proxyIn, enclaveQ, replies, ready, done, mseq, seen, snaps>>
 
 HasLog(w) == \E r \in log : r.wid = w
+Finalizable(r) == Cardinality({m \in Nodes : mseq[m] = r.seq}) >= Quorum
 Outstanding(n, w) ==
     \E r \in proxyIn \cup enclaveQ \cup replies : r.from = n /\ r.wid = w
 
@@ -78,7 +79,7 @@ EnclaveRefuse(r) ==
 
 Finalize(r) ==
     /\ r \in replies /\ r.wid \in ready
-    /\ Cardinality({m \in Nodes : mseq[m] = r.seq}) >= Quorum
+    /\ Finalizable(r)
     /\ ready' = ready \ {r.wid}
     /\ done' = done \cup {r.wid}
     /\ replies' = {x \in replies : x.wid # r.wid}
@@ -124,29 +125,34 @@ Next ==
 
 Spec == Init /\ [][Next]_vars
 
-\* Requests that can occur: seqs are bounded by consumes plus snaps.
-Recs == [from : Nodes, wid : Wids,
-         seq : 0..(Cardinality(Nodes) * Cardinality(Wids) + MaxSnaps)]
-
 \* Refusals, snaps, and restarts are not fair; drops are fair only for a
-\* reply that cannot be finalized. The proxy and the
-\* enclave serve each request. Finalize is strongly fair per withdrawal
-\* because mirrors may refuse it for a while.
+\* reply that cannot be finalized. Fairness is per withdrawal, so no
+\* withdrawal's requests are starved by another's.
 Fairness ==
     /\ \A w \in Wids : WF_vars(MpcComplete(w))
     /\ \A n \in Nodes, w \in Wids : WF_vars(Request(n, w))
-    /\ \A r \in Recs : WF_vars(Proxy(r)) /\ WF_vars(Enclave(r))
+    /\ \A w \in Wids : WF_vars(\E r \in proxyIn : r.wid = w /\ Proxy(r))
+    \* The enclave answers every request, and refusals on timestamp or capacity
+    \* do not recur forever (strong fairness on acceptance).
+    \* This assumes each amount fits max (else F12) and the bucket refills.
+    /\ \A w \in Wids : WF_vars(\E r \in enclaveQ : r.wid = w /\ Enclave(r))
+    /\ \A w \in Wids :
+          SF_vars(\E r \in enclaveQ : r.wid = w /\ r.seq = gSeq /\ Enclave(r))
     /\ \A w \in Wids : SF_vars(\E r \in replies : r.wid = w /\ Finalize(r))
     \* A leader whose finalize fails retries from scratch on a later checkpoint
     \* (finalize_fully_signed_withdrawal re-reads its mirror's seq each time).
-    /\ \A r \in Recs :
-          WF_vars(DropReply(r) /\ Cardinality({m \in Nodes : mseq[m] = r.seq}) < Quorum)
+    /\ \A w \in Wids :
+          WF_vars(\E r \in replies : r.wid = w /\ ~Finalizable(r) /\ DropReply(r))
     /\ \A n \in Nodes : WF_vars(Observe(n)) /\ WF_vars(StallSnap(n))
 
 LiveSpec == Spec /\ Fairness
 
 \* Every withdrawal the Guardian consumed is eventually finalized.
 ConsumedFinalized == \A w \in Wids : HasLog(w) ~> (w \in done)
+
+\* Guarantee to Bridge: a withdrawal ready for the Guardian (MPC complete)
+\* is eventually logged, which is its Guardian signature.
+ReadyConsumed == \A w \in Wids : (w \in ready) ~> HasLog(w)
 
 \* Coverage probe: a withdrawal consumed at two seqs. Should fail.
 NoDoubleConsume == \A r1, r2 \in log : r1.wid = r2.wid => r1 = r2
