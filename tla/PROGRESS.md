@@ -114,6 +114,7 @@
   `mlogan-f2-guardian-double-sign-test`. F9 reproduced on
   `mlogan-f9-guardian-reconcile-gate-test`. An F12 test is in progress on
   `mlogan-f12-guardian-max-lowering-test` (sub-agent).
+- R16: analysed, liveness only (first seal wins on chain).
 - Reorgs and R7: analysed, no new model (FINDINGS.md "Reorgs", R7 row).
 - F13 host hold: checked by code and AWS docs. The hold is bounded near
   15 min only if headers and body share one TLS record; otherwise no
@@ -128,5 +129,5 @@
   clock abstraction).
 - F13: experiment (PUT through a byte-trickling proxy to a test bucket) to
   settle the hold bound. Needs a bucket and the user's go-ahead.
-- Governance: R10. DkgOutputs: rotation. Presig: R16.
+- Governance: R10. DkgOutputs: rotation.
 - After the full system model: revisit `tla/FINDINGS.md` with code owners.
