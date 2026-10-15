@@ -112,8 +112,8 @@
 - Validation: F1 reproduced in a Rust test on branch
   `mlogan-f1-dkg-complaint-test` (see FINDINGS.md F1). F2 reproduced on
   `mlogan-f2-guardian-double-sign-test`. F9 reproduced on
-  `mlogan-f9-guardian-reconcile-gate-test`. An F12 test is in progress on
-  `mlogan-f12-guardian-max-lowering-test` (sub-agent).
+  `mlogan-f9-guardian-reconcile-gate-test`. F12 reproduced on
+  `mlogan-f12-guardian-max-lowering-test`.
 - R10: analysed by code (pause loop; removal via IgnoreMember).
 - R16: analysed, liveness only (first seal wins on chain).
 - Reorgs and R7: analysed, no new model (FINDINGS.md "Reorgs", R7 row).
