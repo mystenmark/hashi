@@ -120,9 +120,9 @@ checked), **review-confirmed** (reviewers traced it in code; no model yet),
   - A removed dealer (R10) blocks with about 1.84% of stake offline.
   - Two Byzantine dealers block with nothing offline: they hurt up to
     5,866.
-  - Rounding is the reason the reach exceeds `f`: the hurt budget is in
-    reduced weight, and the dealer picks members whose reduced weight is
-    small for their stake.
+  - The reach (3,153) is close to `f` (3,333), so the slack is small. The
+    hurt budget is in reduced weight, and the dealer picks members whose
+    reduced weight is small for their stake.
 - **Open questions:** Does weight reduction change the bound in practice? Is
   there an operator runbook for populating the allow-list during an attack?
   Could the protocol exclude a dealer with verified complaints from the
