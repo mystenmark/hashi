@@ -334,8 +334,30 @@ exclude key material older than the erasure window?
 
 ### F9. The Guardian can stay on an old committee for a whole Hashi epoch
 
-- **Status:** model-confirmed (review finding R8); code read directly.
-  Severity: liveness of withdrawal signing.
+- **Status:** reproduced in Rust tests (review finding R8). Severity:
+  liveness of withdrawal signing.
+- **Tests:** branch `mlogan-f9-guardian-reconcile-gate-test` (commit
+  `774b87d3`), `crates/hashi/src/leader/guardian.rs`:
+  `no_committee_reply_holds_the_epoch_gate_while_guardian_is_behind` and the
+  contrast `unavailable_guardian_clears_the_epoch_gate_and_is_retried`. A
+  real `GuardianClient` talks to a stub Guardian server. With a no-committee
+  reply the gate stays at the current epoch and later checks start no
+  reconcile, even after the stub reports an older committee. With an error
+  reply the gate clears and the next check retries. Gap: the gate-clearing
+  arm sits inline in `run()`'s `select!`; the test copies its logic in a
+  helper.
+- **When the Guardian reports no committee:** a standby
+  (ProvisionerInitialized, not Activated) returns `Ok` with no committee
+  epoch (`hashi-guardian/src/enclave.rs:614`). A failing or unreachable
+  Guardian yields `Err`, which clears the gate. The proxy caches successful
+  info replies, including no-committee ones, for 30 s
+  (`hashi-guardian-proxy/src/guardian_info.rs:18,53-77`).
+- **Why the Guardian comes up behind:** activation installs the latest
+  committee in the Guardian's S3 log (`operator_activate.rs:50-55`). If the
+  old Guardian stopped before receiving the new epoch's handoff, the new
+  one starts on the previous committee. A standby activation that spans one
+  full leader rotation (100 checkpoints per turn) then sets every node's
+  gate.
 - **Model:** `Reconfig.tla`, config `ReconfigGuardianLive.cfg`
   (`GuardianCatchesUp` fails).
 - **Mechanism:** each node reconciles the Guardian's committee at most once
