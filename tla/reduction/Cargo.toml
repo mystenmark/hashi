@@ -1,0 +1,14 @@
+# Worst-case DKG/rotation hurt under Hashi's weight reduction.
+# Build with the repo's lockfile: cp ../../Cargo.lock . && cargo run --release -- <weights.json> <removed>
+[package]
+name = "reduction-worst-case"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+fastcrypto-tbls = { git = "https://github.com/MystenLabs/fastcrypto.git", rev = "7cb95be87bb0b4c745c82824b1adb8e4aaf38aa6" }
+fastcrypto = { git = "https://github.com/MystenLabs/fastcrypto.git", rev = "7cb95be87bb0b4c745c82824b1adb8e4aaf38aa6" }
+serde_json = "1"
+
+[workspace]
