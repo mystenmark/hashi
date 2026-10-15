@@ -835,13 +835,16 @@ exclude key material older than the erasure window?
     capability. The host can also start the handover: it holds the PUT
     until the old enclave panics, which gives the operator and provisioners
     a reasonable cause to activate a replacement.
-  - **What it gains:** alone, the host breaks the single log chain
-    (safety 19), which serves sabotage or extortion. Extra BTC outflow also
-    needs the new session to sign a different `W` at the colliding seq,
-    which needs a Byzantine committee member or a leader race; a held
-    record for the same `W` in the same hour collides on its key. A thief
-    who also controls the committee and MPC gains at most one record (at
-    most `max`) per handover.
+  - **What it gains:** the host alone, with an honest committee and
+    honest leaders, releases two withdrawals for one debit.
+    [`GuardianSessionsLateWids.cfg`](GuardianSessionsLateWids.cfg)
+    (`DistinctWidPerSeq` fails): `a` signs `W1` at seq 0 and the host holds
+    the PUT; `b` activates and recovers next seq 0; the held record lands;
+    the proxy replays it and the leader finalizes `W1`; `b` then signs `W2`
+    at seq 0. Outflow exceeds the rate bound by `W1`'s amount, at most
+    `max`, once per handover. A host that sells this, or an owner of `W1`
+    and `W2` who bribes the host, gains up to `max` beyond the limit; the
+    main use is to defeat the limiter during a committee compromise.
   - **Without an adversary:** a short host-to-S3 partition across an
     activation may deliver a request the kernel had already buffered
     (unconfirmed). The enclave image runs no time sync
@@ -856,8 +859,8 @@ exclude key material older than the erasure window?
   attempt timeout 5). Session `a` is active at time 0; `b` may initialise
   and activate later. Results:
   - [`GuardianSessions.cfg`](GuardianSessions.cfg) (equal clocks, no late durability): all pass,
-    33.1M states.
-  - [`GuardianSessionsAhead1.cfg`](GuardianSessionsAhead1.cfg) (`b`'s clock 1 minute ahead): pass, 39.8M
+    62.2M states (with withdrawal ids).
+  - [`GuardianSessionsAhead1.cfg`](GuardianSessionsAhead1.cfg) (`b`'s clock 1 minute ahead): pass, 74.4M
     states.
   - [`GuardianSessionsAhead2.cfg`](GuardianSessionsAhead2.cfg) (2 minutes ahead): `UniqueSeq` fails.
   - [`GuardianSessionsLate.cfg`](GuardianSessionsLate.cfg) (equal clocks, a timed-out PUT lands up to
@@ -906,8 +909,10 @@ exclude key material older than the erasure window?
 - **Consequence:** the late record is durable, so the proxy can replay its
   signatures. The new session recovered its limiter without that debit,
   so outflow can exceed the rate bound by that record's amount (at most
-  `max`), if the new session also signs a different `W` at that seq (see
-  the threat model). Two records share a seq. The object key is
+  `max`); the new session signs the next `W` at the same seq after the
+  leader finalizes the held one through the proxy
+  ([`GuardianSessionsLateWids.cfg`](GuardianSessionsLateWids.cfg)). Two
+  records share a seq. The object key is
   `<hour>/<seq>-wid<wid>.json`
   ([`withdrawal.rs:35-46`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi-types/src/guardian/s3/log_messages/withdrawal.rs#L35-L46)),
   so `If-None-Match` stops a second write only for the same seq, wid, and
