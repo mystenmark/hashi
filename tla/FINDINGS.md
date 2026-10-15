@@ -426,8 +426,35 @@ exclude key material older than the erasure window?
 
 ### F12. Lowering the Guardian's max capacity can halt all withdrawals
 
-- **Status:** model-confirmed; code facts checked by a sub-agent. Severity:
-  liveness of all withdrawals. Recovery requires another operator rotation.
+- **Status:** reproduced in Rust tests. Severity: liveness of all
+  withdrawals. Recovery requires another operator rotation.
+- **Tests:** branch [`mlogan-f12-guardian-max-lowering-test`](https://github.com/mystenmark/hashi/tree/mlogan-f12-guardian-max-lowering-test)
+  (commit [`9ea9a9dc`](https://github.com/mystenmark/hashi/commit/9ea9a9dc96bfc71eb207aad29b889e526214f4cb)):
+  - [`crates/hashi-guardian/src/withdraw_mode/operator_activate.rs`](https://github.com/mystenmark/hashi/blob/9ea9a9dc96bfc71eb207aad29b889e526214f4cb/crates/hashi-guardian/src/withdraw_mode/operator_activate.rs):
+    `activation_with_max_below_committed_outflow_refuses_it_forever` and the
+    contrast `activation_with_max_covering_committed_outflow_signs_it`.
+    Session A signs one withdrawal. Session B activates through the real
+    `operator_activate` with a max 1 sat below `W`'s outflow and recovers
+    from A's log. With a full bucket, at four timestamps, `W` gets
+    `RateLimitExceeded`; `next_seq` and the log do not change. With a max
+    that covers `W`, it is signed. Needs `--features non-enclave-dev`.
+  - [`crates/hashi/src/leader/withdrawal_transactions.rs`](https://github.com/mystenmark/hashi/blob/9ea9a9dc96bfc71eb207aad29b889e526214f4cb/crates/hashi/src/leader/withdrawal_transactions.rs):
+    `lowered_max_parks_a_committed_withdrawal_and_blocks_commitments` and
+    the contrast `covering_max_lets_the_withdrawal_past_the_gate`. The node
+    adopts the lowered max from a stub Guardian through the real reconcile.
+    `finalize_fully_signed_withdrawal`, called at times from 1 s to 30 days
+    later, never calls the Guardian, and the commit path stops at the
+    unsigned-`W` gate.
+- **Refinement from the tests:** once nodes adopt the new config, the
+  leader's own limiter check rejects `W` before MPC signing
+  ([`withdrawal_transactions.rs:427-441`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/leader/withdrawal_transactions.rs#L427-L441)),
+  logs a warning, and returns `Ok`. The Guardian is never asked. Before
+  adoption the Guardian refuses `W`. `W` is stuck either way. New requests
+  above the max are skipped
+  ([`withdrawal_request_flow.rs:473-480`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/leader/withdrawal_request_flow.rs#L473-L480)),
+  but nothing does that for a committed `W`. Gaps: the leader test cannot
+  reach the Guardian call (it needs live committee servers), and the Move
+  side (no cancel path) was checked by reading only.
 - **Model:** [`BridgeLimiter.tla`](BridgeLimiter.tla) composes `Bridge` with `GuardianLimiter`.
   [`BridgeLimiter.cfg`](BridgeLimiter.cfg) (no rotation) passes all safety, including
   `SignableByGuardian`. [`BridgeLimiterRotate.cfg`](BridgeLimiterRotate.cfg) violates
