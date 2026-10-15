@@ -98,6 +98,16 @@
   - `BridgeLimiterRotateStuck.cfg`: `StuckIsPermanent` and
     `StuckBlocksCommits` pass, 418k states.
   - R3 safety holds; R3 liveness not checked (bounded clock).
+- `GuardianSessions` (via `MC_GuardianSessions.tla`): heartbeat fence,
+  attempt timeout with late durability, activation scan, limiter recovery.
+  Session `a` starts active; `b` may take over.
+  - `GuardianSessions.cfg`: all pass, 33.1M states. Probe reaches a
+    handover with records from both sessions.
+  - `GuardianSessionsAhead1.cfg`: pass, 39.8M states.
+  - `GuardianSessionsAhead2.cfg`, `GuardianSessionsLate.cfg`: `UniqueSeq`
+    fails (F13). `GuardianSessionsWriterAhead.cfg`: `OneWriter` fails.
+  - Not modelled: committee records, two standbys activating together,
+    the three-session recovery rollback (argued in F13).
 - Validation: F1 reproduced in a Rust test on branch
   `mlogan-f1-dkg-complaint-test` (see FINDINGS.md F1). F2 reproduced on
   `mlogan-f2-guardian-double-sign-test`. F9 reproduced on
@@ -108,7 +118,6 @@
 - `Presig`: result of full config (`Presig.cfg`, MaxIndex 3, MaxRand 4).
   Consider modelling batches and seals explicitly so the residual case
   arises only from a digest mismatch plus a code change.
-- Guardian: model sessions, heartbeat fence, S3 durability, and activation
-  (safety 19); committee chain and proxy handoff gate (safety 16); liveness
-  "consumed implies finalized".
+- Guardian: liveness "consumed implies finalized" (needs an unbounded
+  clock abstraction).
 - After the full system model: revisit `tla/FINDINGS.md` with code owners.
