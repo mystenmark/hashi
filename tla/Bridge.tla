@@ -371,11 +371,15 @@ CleanupSpent(id) ==
 
 -----------------------------------------------------------------------------
 
-Next ==
+EpochNext == StartReconfig \/ EndReconfig \/ AbortReconfig
+
+\* Actions other than epoch changes and Guardian signing, which a composed
+\* model replaces.
+OpNext ==
     \/ \E o \in DepOuts : SendDeposit(o)
     \/ \E t \in mempool : Mine(t) \/ Evict(t)
     \/ \E id \in PoolIds : RecoverySpend(id) \/ CleanupSpent(id)
-    \/ Pause \/ Unpause \/ StartReconfig \/ EndReconfig \/ AbortReconfig
+    \/ Pause \/ Unpause
     \/ \E r \in DepReqIds :
           \/ RequestDeposit(r) \/ ApproveDeposit(r) \/ DelayElapses(r)
           \/ Expire(r) \/ DeleteExpired(r) \/ ConfirmDeposit(r)
@@ -385,9 +389,11 @@ Next ==
           fee \in 0..MaxFee, ch \in BOOLEAN :
           CommitWithdrawal(w, Q, I, fee, ch)
     \/ \E w \in Wids :
-          \/ MpcSign(w) \/ GuardianSign(w) \/ CommitInputSignatures(w)
+          \/ MpcSign(w) \/ CommitInputSignatures(w)
           \/ FinalizeWithdrawal(w) \/ BroadcastWithdrawal(w)
           \/ ConfirmWithdrawal(w)
+
+Next == EpochNext \/ OpNext \/ \E w \in Wids : GuardianSign(w)
 
 Spec == Init /\ [][Next]_vars
 
@@ -397,8 +403,8 @@ Commit == \E w \in Wids, Q \in SUBSET Reqs, I \in SUBSET PoolIds,
 
 \* Honest parties and the Bitcoin network act eventually. Adversarial and
 \* user actions (recovery, eviction, pause, cancel, expiry) are not fair.
-Fairness ==
-    /\ WF_vars(Unpause) /\ WF_vars(EndReconfig)
+OpFairness ==
+    /\ WF_vars(Unpause)
     /\ \A o \in DepOuts : SF_vars(Mine(DepTx(o)))
     /\ \A r \in DepReqIds :
           /\ WF_vars(ApproveDeposit(r)) /\ WF_vars(DelayElapses(r))
@@ -406,10 +412,14 @@ Fairness ==
     /\ \A q \in Reqs : WF_vars(ApproveRequest(q))
     /\ WF_vars(Commit)
     /\ \A w \in Wids :
-          /\ WF_vars(MpcSign(w)) /\ WF_vars(GuardianSign(w))
+          /\ WF_vars(MpcSign(w))
           /\ WF_vars(CommitInputSignatures(w)) /\ WF_vars(FinalizeWithdrawal(w))
           /\ SF_vars(BroadcastWithdrawal(w)) /\ SF_vars(Mine(WTx(w)))
           /\ WF_vars(ConfirmWithdrawal(w))
+
+Fairness ==
+    /\ OpFairness /\ WF_vars(EndReconfig)
+    /\ \A w \in Wids : WF_vars(GuardianSign(w))
 
 LiveSpec == Spec /\ Fairness
 
@@ -470,6 +480,14 @@ WithdrawalCompletes ==
 \* Liveness 2: every approved request is eventually committed or cancelled.
 RequestServed ==
     \A q \in Reqs : (wreq[q] = "appr") ~> (wreq[q] \in {"comm", "canc"})
+
+\* Liveness 1: a true deposit claim whose output is final is eventually
+\* confirmed, unless the output entered the pool another way.
+DepositCompletes ==
+    \A r \in DepReqIds :
+        (r[2] = DepAmt[r[1]] /\ r[3] = DepUser[r[1]]) =>
+            ((depReq[r].st = "req" /\ DepTx(r[1]) \in finalTx)
+                ~> (depReq[r].st \in {"done", "deleted"} \/ InPool(r[1])))
 
 \* R2 probe: no withdrawal transaction enters the mempool while paused.
 PausedNoWithdrawalBroadcast ==

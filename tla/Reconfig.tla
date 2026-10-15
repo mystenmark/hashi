@@ -29,7 +29,8 @@ CONSTANTS
     HoldEnabled,        \* governance may set and clear reconfig_hold
     MpcMayFail,         \* a formed committee may be unable to complete
     ProxyGate,          \* the proxy admits only stored handoffs
-    RestartsEnabled     \* nodes may restart, clearing leader state
+    RestartsEnabled,    \* nodes may restart, clearing leader state
+    NoCommitteeFails    \* a reply with no committee clears the gate (F9 fix)
 
 None == -1
 
@@ -192,9 +193,11 @@ ChainEnd(e) == IF \E h \in stored : h[1] = e
 
 \* A node reconciles once per Hashi epoch while it is leader; leadership
 \* rotates, so any node may. With no committee reported (not activated) the
-\* call returns Ok and the node keeps its gate set.
+\* call returns Ok and the node keeps its gate set, unless NoCommitteeFails
+\* treats that reply as a failure.
 LeaderReconcile(n) ==
     /\ gate[n] # hashi
+    /\ NoCommitteeFails => gActive
     /\ gate' = [gate EXCEPT ![n] = hashi]
     /\ gEpoch' = IF gActive THEN ChainEnd(gEpoch) ELSE gEpoch
     /\ UNCHANGED <<chainVars, signedH, view, attempts, panicked, gActive>>
@@ -228,14 +231,15 @@ Next ==
 Spec == Init /\ [][Next]_vars
 
 \* Honest nodes and the Guardian operator act eventually; governance clears
-\* a hold eventually. Sui keeps advancing until MaxSui.
+\* a hold eventually. Sui keeps advancing until MaxSui. A leader retries a
+\* failed reconcile every tick, so reconcile is strongly fair.
 Fairness ==
     /\ WF_vars(SuiAdvance) /\ WF_vars(SetHold(FALSE)) /\ WF_vars(SignHandoff)
     /\ WF_vars(GuardianUp)
     /\ \A n \in Nodes :
           WF_vars(Sync(n)) /\ WF_vars(NodeAbort(n))
           /\ WF_vars(NodeStart(n)) /\ WF_vars(NodeEnd(n))
-          /\ WF_vars(LeaderReconcile(n))
+          /\ SF_vars(LeaderReconcile(n))
 
 LiveSpec == Spec /\ Fairness
 
