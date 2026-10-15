@@ -123,12 +123,18 @@
 
 ## Remaining
 
-- `Presig`: result of full config (`Presig.cfg`, MaxIndex 3, MaxRand 4).
-  Consider modelling batches and seals explicitly so the residual case
-  arises only from a digest mismatch plus a code change.
-- Guardian: liveness "consumed implies finalized" (needs an unbounded
-  clock abstraction).
+- Guardian liveness: `GuardianLimiterLive.cfg` (consumed implies finalized,
+  stall reconcile fair, clock bounded at 3) is running; record the result.
 - F13: experiment (PUT through a byte-trickling proxy to a test bucket) to
   settle the hold bound. Needs a bucket and the user's go-ahead.
-- DkgOutputs: rotation (overlaps the F1 fork). R10 + F1 interaction.
 - After the full system model: revisit `tla/FINDINGS.md` with code owners.
+
+## Done in this pass
+
+- `DkgRotation.tla`: removed Byzantine dealers in the rotation that removes
+  them. One alone cannot block; one plus one offline new member can; two
+  can.
+- `GuardianLimiterByz.cfg`: one Byzantine member gets one wid consumed at
+  three seqs (F2).
+- `Presig.cfg` full config passed earlier (107.5M states); batches and
+  seals closed by R16 analysis.
