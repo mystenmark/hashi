@@ -425,3 +425,260 @@ impl LeaderService {
             .ok()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hashi_types::proto;
+    use hashi_types::proto::guardian_service_server::GuardianService;
+    use hashi_types::proto::guardian_service_server::GuardianServiceServer;
+    use std::sync::Mutex;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+    use tonic::Request;
+    use tonic::Response;
+    use tonic::Status;
+
+    /// What the stub answers to `GetGuardianInfo`.
+    #[derive(Clone, Copy)]
+    enum InfoReply {
+        /// A guardian with no committee: standby, or not yet activated.
+        NoCommittee,
+        Committee(u64),
+        Unavailable,
+    }
+
+    #[derive(Clone)]
+    struct StubGuardian {
+        reply: Arc<Mutex<InfoReply>>,
+        info_calls: Arc<AtomicUsize>,
+    }
+
+    fn info_response(current_committee_epoch: Option<u64>) -> proto::GetGuardianInfoResponse {
+        let signing_pub_key = ed25519_dalek::SigningKey::from_bytes(&[7; 32])
+            .verifying_key()
+            .to_bytes();
+        proto::GetGuardianInfoResponse {
+            info: Some(proto::GuardianInfoData {
+                signing_pub_key: Some(signing_pub_key.to_vec().into()),
+                encryption_pubkey: Some(vec![0; 32].into()),
+                current_committee_epoch,
+                ..Default::default()
+            }),
+            timestamp_ms: Some(1),
+        }
+    }
+
+    #[tonic::async_trait]
+    impl GuardianService for StubGuardian {
+        async fn get_guardian_info(
+            &self,
+            _: Request<proto::GetGuardianInfoRequest>,
+        ) -> Result<Response<proto::GetGuardianInfoResponse>, Status> {
+            self.info_calls.fetch_add(1, Ordering::SeqCst);
+            let reply = *self.reply.lock().unwrap();
+            match reply {
+                InfoReply::NoCommittee => Ok(Response::new(info_response(None))),
+                InfoReply::Committee(epoch) => Ok(Response::new(info_response(Some(epoch)))),
+                InfoReply::Unavailable => Err(Status::unavailable("guardian down")),
+            }
+        }
+        async fn get_attested_guardian_info(
+            &self,
+            _: Request<proto::GetAttestedGuardianInfoRequest>,
+        ) -> Result<Response<proto::GetAttestedGuardianInfoResponse>, Status> {
+            Err(Status::unimplemented("stub"))
+        }
+        async fn setup_new_key(
+            &self,
+            _: Request<proto::SetupNewKeyRequest>,
+        ) -> Result<Response<proto::SignedSetupNewKeyResponse>, Status> {
+            Err(Status::unimplemented("stub"))
+        }
+        async fn confirm_ceremony(
+            &self,
+            _: Request<proto::SignedCeremonyConfirmationRequest>,
+        ) -> Result<Response<proto::CeremonyConfirmationResponse>, Status> {
+            Err(Status::unimplemented("stub"))
+        }
+        async fn rotate_kp_set(
+            &self,
+            _: Request<proto::BatchProvisionerRotateKpSetRequest>,
+        ) -> Result<Response<proto::SignedRotateKpSetResponse>, Status> {
+            Err(Status::unimplemented("stub"))
+        }
+        async fn operator_init(
+            &self,
+            _: Request<proto::OperatorInitRequest>,
+        ) -> Result<Response<proto::OperatorInitResponse>, Status> {
+            Err(Status::unimplemented("stub"))
+        }
+        async fn provisioner_init(
+            &self,
+            _: Request<proto::BatchProvisionerInitRequest>,
+        ) -> Result<Response<proto::ProvisionerInitResponse>, Status> {
+            Err(Status::unimplemented("stub"))
+        }
+        async fn provisioner_rotate_cert(
+            &self,
+            _: Request<proto::SignedProvisionerRotateCertRequest>,
+        ) -> Result<Response<proto::SignedProvisionerRotateCertResponse>, Status> {
+            Err(Status::unimplemented("stub"))
+        }
+        async fn operator_activate(
+            &self,
+            _: Request<proto::OperatorActivateRequest>,
+        ) -> Result<Response<proto::OperatorActivateResponse>, Status> {
+            Err(Status::unimplemented("stub"))
+        }
+        async fn standard_withdrawal(
+            &self,
+            _: Request<proto::SignedStandardWithdrawalRequest>,
+        ) -> Result<Response<proto::SignedStandardWithdrawalResponse>, Status> {
+            Err(Status::unimplemented("stub"))
+        }
+        async fn update_committee(
+            &self,
+            _: Request<proto::SignedCommitteeTransition>,
+        ) -> Result<Response<proto::UpdateCommitteeResponse>, Status> {
+            Err(Status::unimplemented("stub"))
+        }
+        async fn update_committee_chain(
+            &self,
+            _: Request<proto::UpdateCommitteeChainRequest>,
+        ) -> Result<Response<proto::UpdateCommitteeResponse>, Status> {
+            Err(Status::unimplemented("stub"))
+        }
+    }
+
+    struct Harness {
+        leader: LeaderService,
+        guardian: StubGuardian,
+        _tmpdir: tempfile::TempDir,
+    }
+
+    impl Harness {
+        async fn new(hashi_epoch: u64, reply: InfoReply) -> Self {
+            let guardian = StubGuardian {
+                reply: Arc::new(Mutex::new(reply)),
+                info_calls: Arc::default(),
+            };
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let incoming = futures::stream::unfold(listener, |listener| async move {
+                let result = listener.accept().await.map(|(stream, _)| stream);
+                Some((result, listener))
+            });
+            tokio::spawn(
+                tonic::transport::Server::builder()
+                    .add_service(GuardianServiceServer::new(guardian.clone()))
+                    .serve_with_incoming(incoming),
+            );
+
+            let tmpdir = tempfile::tempdir().unwrap();
+            let mut config = crate::config::Config::new_for_testing();
+            config.db = Some(tmpdir.path().into());
+            let hashi = Hashi::new_with_registry(
+                crate::ServerVersion::new("unknown", "unknown"),
+                None,
+                config,
+                &prometheus::Registry::new(),
+            )
+            .unwrap();
+            hashi
+                .onchain_state
+                .set(crate::onchain::OnchainState::new_for_test(hashi_epoch))
+                .unwrap();
+            let client = hashi
+                .new_guardian_client(&format!("http://{addr}"))
+                .unwrap();
+            hashi.guardian_client.set(Some(client)).unwrap();
+
+            Self {
+                leader: LeaderService::new(hashi),
+                guardian,
+                _tmpdir: tmpdir,
+            }
+        }
+
+        fn set_reply(&self, reply: InfoReply) {
+            *self.guardian.reply.lock().unwrap() = reply;
+        }
+
+        fn info_calls(&self) -> usize {
+            self.guardian.info_calls.load(Ordering::SeqCst)
+        }
+
+        /// Awaits the reconcile task and applies its result the way the
+        /// `guardian_committee_reconcile_task` arm of `LeaderService::run` does.
+        async fn finish_reconcile(&mut self) -> anyhow::Result<()> {
+            let task = self
+                .leader
+                .guardian_committee_reconcile_task
+                .as_mut()
+                .expect("a reconcile task is running");
+            let result = task.await;
+            self.leader.guardian_committee_reconcile_task = None;
+            if !matches!(&result, Ok(Ok(()))) {
+                self.leader.last_guardian_reconcile_epoch = None;
+            }
+            result.expect("reconcile task panicked")
+        }
+    }
+
+    // F9: a guardian that reports no committee during the leader's
+    // reconcile is not asked again in that hashi epoch, even once it
+    // comes back on an older committee.
+    #[tokio::test]
+    async fn no_committee_reply_holds_the_epoch_gate_while_guardian_is_behind() {
+        let mut h = Harness::new(5, InfoReply::NoCommittee).await;
+
+        h.leader.check_reconcile_guardian_committee();
+        h.finish_reconcile().await.unwrap();
+        assert_eq!(h.info_calls(), 1);
+        assert_eq!(h.leader.last_guardian_reconcile_epoch, Some(5));
+
+        // The guardian is activated on the committee of epoch 4.
+        h.set_reply(InfoReply::Committee(4));
+        for _ in 0..3 {
+            h.leader.check_reconcile_guardian_committee();
+            assert!(h.leader.guardian_committee_reconcile_task.is_none());
+        }
+        assert_eq!(h.info_calls(), 1);
+        assert_eq!(h.leader.last_guardian_reconcile_epoch, Some(5));
+
+        // Only a hashi epoch change reopens the gate.
+        h.leader.inner.onchain_state().set_epoch_for_test(6);
+        h.leader.check_reconcile_guardian_committee();
+        assert!(h.leader.guardian_committee_reconcile_task.is_some());
+        let err = h.finish_reconcile().await.unwrap_err();
+        assert_eq!(h.info_calls(), 2);
+        assert!(
+            err.to_string()
+                .contains("missing on-chain committee handoff for epoch 4"),
+            "{err:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unavailable_guardian_clears_the_epoch_gate_and_is_retried() {
+        let mut h = Harness::new(5, InfoReply::Unavailable).await;
+
+        h.leader.check_reconcile_guardian_committee();
+        h.finish_reconcile().await.unwrap_err();
+        assert_eq!(h.info_calls(), 1);
+        assert_eq!(h.leader.last_guardian_reconcile_epoch, None);
+
+        h.set_reply(InfoReply::Committee(4));
+        h.leader.check_reconcile_guardian_committee();
+        assert!(h.leader.guardian_committee_reconcile_task.is_some());
+        let err = h.finish_reconcile().await.unwrap_err();
+        assert_eq!(h.info_calls(), 2);
+        // The retry reaches the handoff replay for the guardian's epoch.
+        assert!(
+            err.to_string()
+                .contains("missing on-chain committee handoff for epoch 4"),
+            "{err:#}"
+        );
+    }
+}

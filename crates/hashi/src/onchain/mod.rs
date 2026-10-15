@@ -289,6 +289,77 @@ impl OnchainState {
         Ok((state, seed))
     }
 
+    /// An empty mirror at hashi `epoch` with no watcher and an unreachable
+    /// Sui client.
+    #[cfg(test)]
+    pub(crate) fn new_for_test(epoch: u64) -> Self {
+        let mut committees = types::CommitteeSet::new(Address::ZERO, Address::ZERO);
+        committees.set_epoch(epoch);
+        let hashi = types::Hashi {
+            id: Address::ZERO,
+            committees,
+            config: types::Config {
+                config: BTreeMap::new(),
+                enabled_versions: Default::default(),
+                upgrade_cap: None,
+            },
+            epoch_config: move_types::Config::default(),
+            treasury: types::Treasury {
+                id: Address::ZERO,
+                treasury_caps: BTreeMap::new(),
+                metadata_caps: BTreeMap::new(),
+            },
+            bitcoin: None,
+            proposals: types::Proposals {
+                active_id: Address::ZERO,
+                executed_id: Address::ZERO,
+                active: BTreeMap::new(),
+                executed: BTreeMap::new(),
+            },
+            tob: types::Tob {
+                id: Address::ZERO,
+                buckets: BTreeMap::new(),
+            },
+            num_consumed_presigs: 0,
+        };
+        let (sender, _) = broadcast::channel(BROADCAST_CHANNEL_CAPACITY);
+        Inner {
+            ids: HashiIds {
+                package_id: Address::ZERO,
+                hashi_object_id: Address::ZERO,
+            },
+            client: Client::new("http://127.0.0.1:1").unwrap(),
+            sender,
+            checkpoint: watch::channel(CheckpointInfo::default()).0,
+            state_watermark: watch::channel(None).0,
+            state: RwLock::new(State {
+                package_versions: move_types::PackageVersions::default(),
+                hashi,
+                withdrawal_signed_at_ms: BTreeMap::new(),
+            }),
+            tls_private_key: None,
+            grpc_max_decoding_message_size: None,
+            metrics: None,
+            deposit_tracker: crate::deposit_tracker::DepositTracker::new_uninstrumented(),
+            local_limiter: OnceLock::new(),
+            guardian_reconcile_notify: Arc::new(tokio::sync::Notify::new()),
+        }
+        .pipe(Arc::new)
+        .pipe(Self)
+    }
+
+    /// Moves the hashi epoch, as an applied reconfig would.
+    #[cfg(test)]
+    pub(crate) fn set_epoch_for_test(&self, epoch: u64) {
+        self.0
+            .state
+            .write()
+            .unwrap()
+            .hashi
+            .committees
+            .set_epoch(epoch);
+    }
+
     pub fn subscribe(&self) -> broadcast::Receiver<Notification> {
         self.0.sender.subscribe()
     }
