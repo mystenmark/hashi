@@ -325,7 +325,7 @@ described there.
 
 ### F7. The Guardian's protection of a pool UTXO lapses after 60 days
 
-- 🧑 **Human Take:** This is as designed. There is planned monitoring to ensure that UTXOs don't timeout due to neglect. Monitoring also needs a way to refresh a UTXO; no dedicated refresh transaction exists today.
+- 🧑 **Human Take:** This is as designed. There is planned monitoring to ensure that UTXOs don't timeout due to neglect.
 - **Status:** review-confirmed design analysis; the aftermath is
   model-confirmed. Severity: a compromised or colluding committee (current,
   or past with retained key material) can spend idle pool funds without the
@@ -527,7 +527,7 @@ exclude key material older than the erasure window?
 - 🧑 **Human Take:** I don't have enough context to judge. I can see two interpretations here:
   1. Pausing is already a race - anything that can is caught in a grey area like this could also go out a little sooner and win the race outright.
   2. As the AI suggests, if the pause is *because* of a committed withdrawal that looks bad, the pause won't help stop it.
-  3. A withdrawal finalized before the pause can be broadcast by anyone, with no Byzantine member needed.
+- Reconsider whether the recovery leaf should use the same key that rotation
 - **Status:** model-confirmed consequence of review finding R2.
 - **Threat model:**
   - **One Byzantine committee member** of the current or pending committee,
@@ -1022,7 +1022,7 @@ exclude key material older than the erasure window?
 ### F15. A withdrawal signed at a fee the market later leaves behind waits, but anyone can bump it
 
 - 🧑 **Human Take:** Probably deserves monitoring. Any withdrawal with too low a fee can be bumped manually by anyone with BTC to spend on it,
-  but if no one does so promptly the withdrawer can suffer losses (price movement while waiting, or the fee to bump it themselves).
+  but if no one does so promptly the withdrawer can suffer losses (price movement while waiting).
 - **Status:** analysed by code reading; **no action required.** Recorded so
   that later reviews do not rediscover it without this context. Not
   modelled: a TLA model would only restate "a transaction with too low a
