@@ -965,59 +965,90 @@ exclude key material older than the erasure window?
   shows the hold is bounded near 15 minutes, another option is to record
   that bound as the late-durability budget and raise `Q` to match.
 
-### F14. Presignature batch skips accumulate and can stall MPC signing for an epoch
+### F14. Presignature batch skips accumulate and can stall MPC signing
 
-- **Status:** model-confirmed mechanism; how often skips happen is unknown.
-  Severity: liveness of all withdrawal signing until the next completed
-  reconfiguration (about one Sui epoch).
+- **Status:** reproduced in Rust tests (mechanism) and model-confirmed;
+  how often skips happen is unknown. Severity: liveness of all withdrawal
+  signing until restarts or the next completed reconfiguration (about one
+  Sui epoch).
 - **Threat model:** no adversary is needed. A node skips a batch for
   node-local reasons: its AVID round state for a dealer is missing or
   differs, retrieval fails, or a dealer has zero reduced weight in its view
   ([`mpc_except_signing.rs:3825-3990`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/mpc/mpc_except_signing.rs#L3825-L3990)).
   Round state is persisted ([`db.rs:488`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/db.rs#L488)), so a plain
   restart does not cause this; database loss, a restore from an old backup,
-  network faults during retrieval, or bugs do. A transient cause heals when
-  the node retries the batch on a later signing attempt; a persistent one
-  lasts the epoch. Byzantine members cannot cause a skip directly, since a
-  certified AVID dealing is retrievable, but by refusing to sign seals they
-  shrink the margin.
+  network faults during retrieval, or bugs do. Any other error from batch
+  generation stalls the node the same way once its retries run out
+  ([`service.rs:327-346`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/mpc/service.rs#L327-L346)). Byzantine members
+  cannot cause a skip directly, since a certified AVID dealing is
+  retrievable, but by refusing to sign seals they shrink the margin.
+- **Tests:** branch [`mlogan-f14-presig-batch-skip-test`](https://github.com/mystenmark/hashi/tree/mlogan-f14-presig-batch-skip-test)
+  (commit [`df3c8219`](https://github.com/mystenmark/hashi/commit/df3c8219931dbb218c1b393b02787785eadc66e2)):
+  - [`crates/hashi/src/mpc/signing.rs`](https://github.com/mystenmark/hashi/blob/df3c8219931dbb218c1b393b02787785eadc66e2/crates/hashi/src/mpc/signing.rs)
+    (n = 4, t = 2): `test_f14_a_node_missing_batch_1_cannot_sign_from_batch_2`
+    (every attempt returns `PoolExhausted`, batch 2 stays staged, and the
+    refill asks for batch 1 again); the contrast
+    `test_f14_a_node_holding_batch_1_signs_from_staged_batch_2`;
+    `test_f14_signing_from_batch_2_fails_when_fewer_than_t_nodes_hold_batch_1`
+    (3 of 4 stalled: the healthy node times out with 1 of 2 partial
+    signatures) and its contrast with 2 stalled;
+    `test_f14_a_node_heals_after_rebuilding_the_missing_batch` (healing
+    needs batch 2 generated again); and
+    `test_f14_a_recovered_manager_can_start_past_a_skipped_batch`.
+  - [`crates/hashi/src/mpc/mpc_except_signing_tests.rs`](https://github.com/mystenmark/hashi/blob/df3c8219931dbb218c1b393b02787785eadc66e2/crates/hashi/src/mpc/mpc_except_signing_tests.rs):
+    `test_f14_lost_round_state_skips_on_every_retry` (persistent cause) and
+    `test_f14_a_failed_retrieval_skips_until_a_retry_reaches_the_voters`
+    (transient cause).
+  - Gaps: the service glue (the `local_skips` bail and the refill loop) is
+    confirmed by reading only; the seal certificate threshold was not
+    exercised; signing tests install batches directly with mock shares.
 - **Model:** [`MpcSigning.tla`](MpcSigning.tla) (7 unit-weight members, one
-  Byzantine, `t = 3`, seal quorum 5, two batches of 2, two withdrawals of 2
-  inputs). Property `SigningCompletes`: every committed withdrawal gets all
-  input signatures recorded.
+  Byzantine, `t = 3`, seal quorum 5). Property `SigningCompletes`: every
+  committed withdrawal gets all input signatures recorded.
   - [`MpcSigning.cfg`](MpcSigning.cfg) (no skips) and
     [`MpcSigningOne.cfg`](MpcSigningOne.cfg) (one skipping node): hold.
-  - [`MpcSigningTwoSpread.cfg`](MpcSigningTwoSpread.cfg): fails with at
-    most one skipper per batch. `h2` skips batch 0 and `h1` skips batch 1.
-    Batch 1 then has 4 builders against a seal quorum of 5, never seals,
-    and the withdrawal allocated in it stays unsigned for the epoch.
-  - [`MpcSigningTwoSpreadEpoch.cfg`](MpcSigningTwoSpreadEpoch.cfg): holds
-    when an epoch change follows and the skips do not recur. The leader
-    reallocates the stale inputs.
+  - [`MpcSigningTwo.cfg`](MpcSigningTwo.cfg): two nodes skip batch 0. Batch 0
+    seals, but they never reach batch 1, which gets 4 seal signers against
+    a quorum of 5.
+  - [`MpcSigningTwoSpread.cfg`](MpcSigningTwoSpread.cfg) (batches of 1, at
+    most one skipper per batch): `h2` skips batch 0 and `h1` skips batch 1.
+    Both batches seal; batch 2 gets 4 seal signers and never seals, so the
+    input allocated in it stays unsigned.
+  - [`MpcSigningTwoSpreadEpoch.cfg`](MpcSigningTwoSpreadEpoch.cfg): holds when
+    an epoch change follows and the skips do not recur.
 - **Mechanism:**
   1. A node that skips batch `k` discards it
-     ([`service.rs:831-837`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/mpc/service.rs#L831-L837)).
+     ([`service.rs:831-837`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/mpc/service.rs#L831-L837)), after it has
+     already signed batch `k`'s seal (the seal starts at `:813`).
   2. Batches install only in order
-     ([`signing.rs:428-470`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/mpc/signing.rs#L428-L470)), and the
-     refill always asks for the next installable batch
-     ([`signing.rs:542-555`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/mpc/signing.rs#L542-L555)). The node keeps
-     retrying batch `k`, so it builds, seals, and signs nothing after `k`
-     in that epoch.
+     ([`signing.rs:428-470`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/mpc/signing.rs#L428-L470)), and the refill
+     always asks for the next installable batch
+     ([`signing.rs:542-555`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/mpc/signing.rs#L542-L555)). While its
+     process runs, the node keeps retrying batch `k` and builds, seals, and
+     signs nothing after it.
   3. Skips on different batches therefore add up. Batch `k` can seal only
-     if honest nodes that skipped none of batches `0..k` hold the seal
-     quorum (2/3), and its inputs can be signed only if those nodes hold
-     `t`.
+     if honest nodes that skipped no earlier batch hold the seal quorum
+     (2/3), and its inputs can be signed only if nodes holding batch `k`
+     hold `t`.
   4. `commit_withdrawal_tx` allocates indices regardless of what exists
      (`PROTOCOL.md` 8.3), so withdrawals keep committing into batches that
-     can never seal, and R4 then blocks later commits.
-- **Margin:** cumulative skipping weight above `W/3` minus the weight of
-  members that refuse to sign seals stops signing. With no Byzantine
-  weight that is about a third of stake; near the `f` bound it is close to
-  zero.
+     cannot seal, and R4 then blocks later commits.
+- **Restart:** a restart rebuilds from the first batch that still holds a
+  pending index ([`service.rs:1038-1047`](https://github.com/MystenLabs/hashi/blob/97021d258adc2dc276017defe2f84e4bd3cd9162/crates/hashi/src/mpc/service.rs#L1038-L1047)).
+  If batch `k` has no pending index left, the restarted node installs
+  `k + 1` directly and signs its seal; if batch `k` still has one, the
+  rebuild hits the same skip. So a persistent skip stalls the node until a
+  restart that happens after batch `k` is fully signed by others, or until
+  the epoch changes.
+- **Margin:** cumulative skipping weight on earlier batches above `W/3`
+  minus the weight of members that refuse to sign seals stops later seals.
+  With no Byzantine weight that is about a third of stake; near the `f`
+  bound it is close to zero.
 - **Fix directions:** let a node that skipped batch `k` adopt the sealed
   digest and rebuild from the certified dealings, or let later batches
-  install past a skipped one; alert on discarded batches; give the leader
-  a way to reallocate indices that fall in a batch that cannot seal.
+  install past a skipped one (recovery already can); alert on discarded
+  batches; give the leader a way to reallocate indices that fall in a batch
+  that cannot seal.
 
 ### F15. A withdrawal signed at a fee the market later leaves behind waits, but anyone can bump it
 
