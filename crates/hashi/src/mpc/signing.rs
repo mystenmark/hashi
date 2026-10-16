@@ -2209,8 +2209,12 @@ pub(crate) mod tests {
         }
 
         fn next_batch_dealt(&self) -> Vec<(Vec<G>, Vec<Vec<S>>)> {
+            self.batch_dealt_with_seed(99)
+        }
+
+        fn batch_dealt_with_seed(&self, seed: u64) -> Vec<(Vec<G>, Vec<Vec<S>>)> {
             let batch_size_per_weight: u16 = 10;
-            let mut rng = StdRng::seed_from_u64(99);
+            let mut rng = StdRng::seed_from_u64(seed);
             (0..self.n)
                 .map(|_| {
                     let nonces: Vec<S> = (0..batch_size_per_weight)
@@ -2233,8 +2237,13 @@ pub(crate) mod tests {
 
         /// Build one fresh batch of presignatures per manager.
         fn build_presignatures(&self) -> Vec<Presignatures> {
+            self.build_presignatures_with_seed(99)
+        }
+
+        /// One batch per manager; distinct seeds give batches distinct nonces.
+        fn build_presignatures_with_seed(&self, seed: u64) -> Vec<Presignatures> {
             let batch_size_per_weight: u16 = 10;
-            let nonces_for_dealer = self.next_batch_dealt();
+            let nonces_for_dealer = self.batch_dealt_with_seed(seed);
             (0..self.managers.len())
                 .map(|i| {
                     let outputs: Vec<batch_avss_avid::ReceiverOutput> = (0..self.n as usize)
@@ -4680,6 +4689,343 @@ pub(crate) mod tests {
             setup.managers[0].available_presig_end_index(),
             batch_size + 5
         );
+    }
+
+    // F14: presig batches install only in order, so a node that lacks
+    // batch k cannot sign from any later batch, even one it holds.
+
+    const F14_BATCH_1_SEED: u64 = 101;
+    const F14_BATCH_2_SEED: u64 = 102;
+
+    /// Installs `presigs` as `batch_index`, which must directly follow the latest installed batch.
+    fn install_batch(mgr: &SigningManager, batch_index: u32, presigs: Presignatures) {
+        stage_batch(mgr, batch_index, presigs);
+        let mut state = mgr.state.write().unwrap();
+        let latest = state.batches.last().unwrap();
+        assert_eq!(latest.batch_index + 1, batch_index);
+        let start_index = latest.end_index();
+        let next = state.next_batch.take().unwrap();
+        state.batches.push(PresigBatch {
+            pool: next.pool,
+            start_index,
+            batch_index,
+            dealer_set_digest: next.dealer_set_digest,
+        });
+    }
+
+    fn stage_batch(mgr: &SigningManager, batch_index: u32, presigs: Presignatures) {
+        assert!(
+            mgr.set_next_batch(
+                batch_index,
+                presigs,
+                digest_for_test(batch_index),
+                IdentityInputs::for_test(),
+            )
+            .is_some()
+        );
+    }
+
+    /// Managers not in `stalled` install batches 1 and 2. Managers in
+    /// `stalled` skipped batch 1: they stay on batch 0 and hold batch 2
+    /// staged. Returns the setup and the first global index of batch 2.
+    fn f14_setup(stalled: &[usize]) -> (SigningTestSetup, u64) {
+        let setup = SigningTestSetup::new(4);
+        let batch_size = setup.managers[0].initial_presig_count() as u64;
+        let batch_1 = setup.build_presignatures_with_seed(F14_BATCH_1_SEED);
+        let batch_2 = setup.build_presignatures_with_seed(F14_BATCH_2_SEED);
+        for (i, (b1, b2)) in batch_1.into_iter().zip(batch_2).enumerate() {
+            let mgr = &setup.managers[i];
+            if stalled.contains(&i) {
+                stage_batch(mgr, 2, b2);
+            } else {
+                install_batch(mgr, 1, b1);
+                install_batch(mgr, 2, b2);
+            }
+        }
+        (setup, 2 * batch_size)
+    }
+
+    #[tokio::test]
+    async fn test_f14_a_node_missing_batch_1_cannot_sign_from_batch_2() {
+        let (mut setup, first_of_batch_2) = f14_setup(&[0]);
+        let batch_size = setup.managers[0].initial_presig_count() as u64;
+        let epoch = setup.managers[0].epoch();
+        let req = Address::new([0xF1; 32]);
+        setup.prepare_all(b"batch 2", &S::zero(), req, first_of_batch_2, Some(0));
+        let p2p = setup.mock_p2p_for(0);
+
+        for attempt in 0..3 {
+            setup.refill_rx.borrow_and_update();
+            let result = SigningManager::sign_one(
+                &setup.managers[0],
+                &p2p,
+                req,
+                b"batch 2",
+                first_of_batch_2,
+                &S::zero(),
+                None,
+                Duration::from_secs(30),
+                &test_metrics(),
+            )
+            .await;
+
+            let mgr = &setup.managers[0];
+            assert!(
+                matches!(result, Err(SigningError::PoolExhausted)),
+                "attempt {attempt}: {:?}",
+                result.as_ref().err()
+            );
+            assert_eq!(mgr.batch_index(), 0, "attempt {attempt}");
+            assert_eq!(mgr.prefetched_batch_index(), Some(2), "attempt {attempt}");
+            assert_eq!(mgr.available_presig_end_index(), batch_size);
+            assert!(setup.refill_rx.has_changed().unwrap());
+            assert_eq!(
+                *setup.refill_rx.borrow(),
+                RefillRequest {
+                    epoch,
+                    batch_index: 1,
+                },
+                "attempt {attempt}: the refill asks for the missing batch again"
+            );
+            // The service generates only a batch this accepts.
+            assert!(
+                mgr.refill_skip_reason(RefillRequest {
+                    epoch,
+                    batch_index: 2,
+                })
+                .is_some()
+            );
+            assert_eq!(
+                mgr.refill_skip_reason(RefillRequest {
+                    epoch,
+                    batch_index: 1,
+                }),
+                None
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_f14_a_node_holding_batch_1_signs_from_staged_batch_2() {
+        let setup = SigningTestSetup::new(4);
+        let batch_1 = setup.build_presignatures_with_seed(F14_BATCH_1_SEED);
+        let batch_2 = setup.build_presignatures_with_seed(F14_BATCH_2_SEED);
+        let mut first_of_batch_2 = 0;
+        for (i, (b1, b2)) in batch_1.into_iter().zip(batch_2).enumerate() {
+            let mgr = &setup.managers[i];
+            install_batch(mgr, 1, b1);
+            first_of_batch_2 = mgr
+                .state
+                .read()
+                .unwrap()
+                .batches
+                .last()
+                .unwrap()
+                .end_index();
+            if i == 0 {
+                stage_batch(mgr, 2, b2);
+            } else {
+                install_batch(mgr, 2, b2);
+            }
+        }
+        let req = Address::new([0xF2; 32]);
+        setup.prepare_all(b"batch 2", &S::zero(), req, first_of_batch_2, Some(0));
+
+        let sig = SigningManager::sign_one(
+            &setup.managers[0],
+            &setup.mock_p2p_for(0),
+            req,
+            b"batch 2",
+            first_of_batch_2,
+            &S::zero(),
+            None,
+            Duration::from_secs(30),
+            &test_metrics(),
+        )
+        .await
+        .unwrap();
+
+        verify_schnorr(&setup.verifying_key, b"batch 2", &sig);
+        assert_eq!(setup.managers[0].batch_index(), 2);
+    }
+
+    /// A node heals once a retry of the missing batch succeeds, but the
+    /// later batch it had staged is dropped and must be generated again.
+    #[tokio::test]
+    async fn test_f14_a_node_heals_after_rebuilding_the_missing_batch() {
+        let (mut setup, first_of_batch_2) = f14_setup(&[0]);
+        let epoch = setup.managers[0].epoch();
+        let req = Address::new([0xF3; 32]);
+        setup.prepare_all(b"batch 2", &S::zero(), req, first_of_batch_2, Some(0));
+        let p2p = setup.mock_p2p_for(0);
+        let manager = setup.managers[0].clone();
+        let sign = || {
+            let manager = manager.clone();
+            let p2p = &p2p;
+            async move {
+                SigningManager::sign_one(
+                    &manager,
+                    p2p,
+                    req,
+                    b"batch 2",
+                    first_of_batch_2,
+                    &S::zero(),
+                    None,
+                    Duration::from_secs(30),
+                    &test_metrics(),
+                )
+                .await
+            }
+        };
+        assert!(matches!(sign().await, Err(SigningError::PoolExhausted)));
+
+        let rebuilt_1 = setup
+            .build_presignatures_with_seed(F14_BATCH_1_SEED)
+            .swap_remove(0);
+        stage_batch(&manager, 1, rebuilt_1);
+        assert_eq!(manager.prefetched_batch_index(), Some(1));
+
+        setup.refill_rx.borrow_and_update();
+        assert!(matches!(sign().await, Err(SigningError::PoolExhausted)));
+        assert_eq!(manager.batch_index(), 1);
+        assert!(!manager.has_next_batch());
+        assert_eq!(
+            *setup.refill_rx.borrow(),
+            RefillRequest {
+                epoch,
+                batch_index: 2,
+            }
+        );
+
+        let rebuilt_2 = setup
+            .build_presignatures_with_seed(F14_BATCH_2_SEED)
+            .swap_remove(0);
+        stage_batch(&manager, 2, rebuilt_2);
+        let sig = sign().await.unwrap();
+        verify_schnorr(&setup.verifying_key, b"batch 2", &sig);
+        assert_eq!(manager.batch_index(), 2);
+    }
+
+    /// With n = 4 and t = 2, three nodes stalled before batch 2 leave the
+    /// one node that holds it short of t partial signatures.
+    #[tokio::test]
+    async fn test_f14_signing_from_batch_2_fails_when_fewer_than_t_nodes_hold_batch_1() {
+        let (setup, first_of_batch_2) = f14_setup(&[0, 2, 3]);
+        assert_eq!(setup.t, 2);
+        let req = Address::new([0xF4; 32]);
+        for i in [0, 2, 3] {
+            let result = SigningManager::sign_one(
+                &setup.managers[i],
+                &setup.mock_p2p_for(i),
+                req,
+                b"batch 2",
+                first_of_batch_2,
+                &S::zero(),
+                None,
+                Duration::from_secs(30),
+                &test_metrics(),
+            )
+            .await;
+            assert!(matches!(result, Err(SigningError::PoolExhausted)));
+        }
+
+        let result = SigningManager::sign_one(
+            &setup.managers[1],
+            &setup.mock_p2p_for(1),
+            req,
+            b"batch 2",
+            first_of_batch_2,
+            &S::zero(),
+            None,
+            Duration::from_millis(500),
+            &test_metrics(),
+        )
+        .await;
+        assert!(
+            matches!(
+                result,
+                Err(SigningError::Timeout {
+                    collected: 1,
+                    threshold: 2,
+                })
+            ),
+            "{:?}",
+            result.as_ref().err()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_f14_signing_from_batch_2_succeeds_when_t_nodes_hold_batch_1() {
+        let (setup, first_of_batch_2) = f14_setup(&[0, 3]);
+        let req = Address::new([0xF5; 32]);
+        let sign = |i: usize| {
+            let p2p = setup.mock_p2p_for(i);
+            let manager = setup.managers[i].clone();
+            async move {
+                SigningManager::sign_one(
+                    &manager,
+                    &p2p,
+                    req,
+                    b"batch 2",
+                    first_of_batch_2,
+                    &S::zero(),
+                    None,
+                    Duration::from_secs(30),
+                    &test_metrics(),
+                )
+                .await
+            }
+        };
+        assert!(matches!(sign(0).await, Err(SigningError::PoolExhausted)));
+        assert!(matches!(sign(3).await, Err(SigningError::PoolExhausted)));
+        let (one, two) = tokio::join!(sign(1), sign(2));
+        verify_schnorr(&setup.verifying_key, b"batch 2", &one.unwrap());
+        verify_schnorr(&setup.verifying_key, b"batch 2", &two.unwrap());
+    }
+
+    /// The restart path rebuilds only the batches from the first one with a
+    /// pending index, so a restarted node can start past a batch it skipped.
+    #[tokio::test]
+    async fn test_f14_a_recovered_manager_can_start_past_a_skipped_batch() {
+        let (setup, first_of_batch_2) = f14_setup(&[0]);
+        let stalled = &setup.managers[0];
+        let (refill_tx, _refill_rx) = watch::channel(RefillRequest::default());
+        let batch_2 = setup
+            .build_presignatures_with_seed(F14_BATCH_2_SEED)
+            .swap_remove(0);
+        let (recovered, _) = SigningManager::new_recovered(
+            test_address(0),
+            stalled.config.committee.clone(),
+            stalled.config.params,
+            stalled.config.key_shares.clone(),
+            stalled.config.verifying_key,
+            test_share_owners(4),
+            vec![(batch_2, 2, first_of_batch_2, digest_for_test(2))],
+            first_of_batch_2,
+            &HashSet::new(),
+            crate::constants::PRESIG_REFILL_DIVISOR,
+            Arc::new(refill_tx),
+            IdentityInputs::for_test(),
+        )
+        .unwrap();
+        assert_eq!(recovered.batch_index(), 2);
+
+        let req = Address::new([0xF6; 32]);
+        setup.prepare_all(b"batch 2", &S::zero(), req, first_of_batch_2, Some(0));
+        let sig = SigningManager::sign_one(
+            &recovered,
+            &setup.mock_p2p_for(0),
+            req,
+            b"batch 2",
+            first_of_batch_2,
+            &S::zero(),
+            None,
+            Duration::from_secs(30),
+            &test_metrics(),
+        )
+        .await
+        .unwrap();
+        verify_schnorr(&setup.verifying_key, b"batch 2", &sig);
     }
 
     #[tokio::test]
