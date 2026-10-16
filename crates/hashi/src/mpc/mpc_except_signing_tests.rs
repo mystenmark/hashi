@@ -14465,6 +14465,134 @@ async fn test_avid_party_does_not_pull_for_a_confirm_cert_without_round_state() 
     assert_eq!(mock_p2p.retrieve_calls(), 0);
 }
 
+/// F14: a node whose AVID round state is lost reports a local skip for each
+/// full-weight confirm cert, and retrying the phase does not repair it, so
+/// the service discards the batch on every refill attempt.
+#[tokio::test]
+async fn test_f14_lost_round_state_skips_on_every_retry() {
+    let mut rng = rand::thread_rng();
+    let setup = TestSetup::with_weights(&[6, 1, 6, 1, 1, 1]);
+    let batch_index = 0u32;
+    let (party, managers, certs) = two_full_certs_fixture(&setup, batch_index, 1, &mut rng);
+    let mock_p2p = MockP2PChannel::new(managers, setup.address(1));
+
+    let intact = Arc::new(RwLock::new(party));
+    let mut mock_tob = MockOrderedBroadcastChannel::new(certs.clone());
+    let admitted = admitted_from_tob(&mut mock_tob, &intact, batch_index, None).await;
+    let outcome = MpcManager::run_avid_nonce_party_phase(
+        &intact,
+        batch_index,
+        &mock_p2p,
+        &admitted,
+        None,
+        &test_metrics(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(outcome.outputs.len(), 2);
+    assert_eq!(outcome.local_skips, 0);
+
+    let restored = Arc::new(RwLock::new(setup.create_manager(1)));
+    for attempt in 0..3 {
+        let mut mock_tob = MockOrderedBroadcastChannel::new(certs.clone());
+        let admitted = admitted_from_tob(&mut mock_tob, &restored, batch_index, None).await;
+        let outcome = MpcManager::run_avid_nonce_party_phase(
+            &restored,
+            batch_index,
+            &mock_p2p,
+            &admitted,
+            None,
+            &test_metrics(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome.outputs.len(), 0, "attempt {attempt}");
+        assert_eq!(outcome.local_skips, 2, "attempt {attempt}");
+    }
+    assert_eq!(
+        mock_p2p.retrieve_calls(),
+        0,
+        "a confirm cert is never repaired by retrieval"
+    );
+}
+
+/// F14: a failed retrieval is a local skip, and a retry that reaches the
+/// voters clears it.
+#[tokio::test]
+async fn test_f14_a_failed_retrieval_skips_until_a_retry_reaches_the_voters() {
+    let mut rng = rand::thread_rng();
+    let setup = TestSetup::with_weights(&[6, 1, 6, 1, 1, 1]);
+    let batch_index = 0u32;
+    let dealer_addr = setup.address(4);
+    let party_addr = setup.address(5);
+    let (party, mut managers, full_certs) =
+        two_full_certs_fixture(&setup, batch_index, 5, &mut rng);
+
+    let dealer = Arc::new(RwLock::new(managers.remove(&dealer_addr).unwrap()));
+    let dealer_p2p = MockP2PChannel::new(managers, dealer_addr);
+    let mut dealer_tob = MockOrderedBroadcastChannel::new(vec![]);
+    MpcManager::run_as_avid_nonce_dealer(
+        &dealer,
+        batch_index,
+        &dealer_p2p,
+        &mut dealer_tob,
+        &test_metrics(),
+    )
+    .await
+    .unwrap();
+    let mut certs: Vec<CertificateV1> = dealer_tob
+        .certified_dealers()
+        .await
+        .into_iter()
+        .map(|(_, cert)| cert)
+        .collect();
+    assert_eq!(
+        certs.len(),
+        1,
+        "the pessimistic round published its vote cert"
+    );
+    certs.extend(full_certs);
+    let mut voters = std::mem::take(&mut *dealer_p2p.managers.lock().unwrap());
+    let Ok(dealer) = Arc::try_unwrap(dealer) else {
+        panic!("dealer Arc still shared");
+    };
+    voters.insert(dealer_addr, dealer.into_inner().unwrap());
+    let party = Arc::new(RwLock::new(party));
+
+    let unreachable = MockP2PChannel::new(HashMap::new(), party_addr);
+    let mut mock_tob = MockOrderedBroadcastChannel::new(certs.clone());
+    let admitted = admitted_from_tob(&mut mock_tob, &party, batch_index, None).await;
+    let outcome = MpcManager::run_avid_nonce_party_phase(
+        &party,
+        batch_index,
+        &unreachable,
+        &admitted,
+        None,
+        &test_metrics(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(outcome.outputs.len(), 2);
+    assert_eq!(outcome.local_skips, 1);
+
+    let reachable = MockP2PChannel::new(voters, party_addr);
+    let mut mock_tob = MockOrderedBroadcastChannel::new(certs);
+    let admitted = admitted_from_tob(&mut mock_tob, &party, batch_index, None).await;
+    let outcome = MpcManager::run_avid_nonce_party_phase(
+        &party,
+        batch_index,
+        &reachable,
+        &admitted,
+        None,
+        &test_metrics(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(outcome.outputs.len(), 3);
+    assert_eq!(outcome.local_skips, 0);
+    assert!(reachable.retrieve_calls() > 0);
+}
+
 #[tokio::test]
 async fn test_avid_party_accepts_an_output_it_validated_against_the_cert_without_pulling() {
     let mut rng = rand::thread_rng();
