@@ -8,12 +8,14 @@
 (* signing.rs:428-470). A node may skip batch k for node-local reasons     *)
 (* (lost round state, failed retrieval; mpc_except_signing.rs:3825-3990);  *)
 (* it then discards the batch (service.rs:831-837) and, by contiguity,     *)
-(* can sign nothing at or after batch k in that epoch. A seal (2/3, first  *)
-(* wins) forms on the digest of nodes that built the batch; skipping nodes *)
-(* do not sign it, and Byzantine nodes refuse to. An input is signed when  *)
-(* T honest nodes that installed its batch sign; Byzantine nodes refuse.   *)
-(* An epoch change resets the                                              *)
-(* allocator, batches, and seals; the leader reallocates stale slots.      *)
+(* can sign nothing at or after batch k while its process runs. A restart  *)
+(* rebuilds from the first batch with a pending index (service.rs:1038),   *)
+(* which this model leaves out. A seal (2/3, first wins) is signed by      *)
+(* nodes that skipped no earlier batch: a node signs before its own skip   *)
+(* check (service.rs:813, 831). Byzantine nodes refuse. An input is signed *)
+(* when T honest nodes that installed its batch sign. An epoch change      *)
+(* resets the allocator, batches, and seals; the leader reallocates stale  *)
+(* slots.                                                                  *)
 (*                                                                         *)
 (* Every member has weight 1.                                              *)
 (***************************************************************************)
@@ -48,9 +50,11 @@ vars == <<epoch, alloc, slots, done, ngen, skip, sealed, inst>>
 
 Batches == 0..(MaxBatch - 1)
 BatchOf(i) == i \div BatchSize
-\* Honest nodes that skipped none of batches 0..k. A node that skipped an
-\* earlier batch keeps retrying it and never builds a later one.
-Builders(k) == Honest \ UNION {skip[x] : x \in 0..k}
+\* Honest nodes that sign batch k's seal: those that skipped no earlier batch.
+\* A node signs the seal before its skip check (service.rs:813, 831), so its
+\* own skip of batch k does not remove it; a node that skipped an earlier
+\* batch keeps retrying that batch and never reaches k.
+SealSigners(k) == Honest \ UNION {skip[x] : x \in 0..(k - 1)}
 \* Nodes able to sign in batch k: installed it.
 Able(k) == {n \in Honest : inst[n] > k}
 
@@ -84,7 +88,7 @@ Generate ==
 \* Nodes that built batch k sign its seal; Byzantine nodes refuse.
 Seal(k) ==
     /\ k < ngen /\ k \notin sealed
-    /\ Cardinality(Builders(k)) >= SealQ
+    /\ Cardinality(SealSigners(k)) >= SealQ
     /\ sealed' = sealed \cup {k}
     /\ UNCHANGED <<epoch, alloc, slots, done, ngen, skip, inst>>
 
