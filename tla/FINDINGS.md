@@ -252,7 +252,7 @@ checked), **review-confirmed** (reviewers traced it in code; no model yet),
 - 🧑 **Human Take:** To me this looks like something that could occur inadvertently during a release.
   Because the batch size is just a rust constant, any change to it will apply immediately after a release, and not wait for reconfig.
   If this happens due a mistake in the release process, it would be catastrophic, as the release would go to all nodes, likely resulting
-  in all keys being leaked.
+  in all key shares being leaked to whichever member requests the affected Pending slots.
     - Recommendation: this type of constant belongs in a per-epoch config stored on Sui which can only change at reconfig time.
       I don't think "we will just remember not to change it" is defensible given the consequences.
 - **Status:** model-confirmed for the abstract mechanism; downgraded to a
@@ -325,7 +325,7 @@ described there.
 
 ### F7. The Guardian's protection of a pool UTXO lapses after 60 days
 
-- 🧑 **Human Take:** This is as designed. There is planned monitoring to ensure that UTXOs don't timeout due to neglect.
+- 🧑 **Human Take:** This is as designed. There is planned monitoring to ensure that UTXOs don't timeout due to neglect. Monitoring also needs a way to refresh a UTXO; no dedicated refresh transaction exists today.
 - **Status:** review-confirmed design analysis; the aftermath is
   model-confirmed. Severity: a compromised or colluding committee (current,
   or past with retained key material) can spend idle pool funds without the
@@ -527,7 +527,7 @@ exclude key material older than the erasure window?
 - 🧑 **Human Take:** I don't have enough context to judge. I can see two interpretations here:
   1. Pausing is already a race - anything that can is caught in a grey area like this could also go out a little sooner and win the race outright.
   2. As the AI suggests, if the pause is *because* of a committed withdrawal that looks bad, the pause won't help stop it.
-- Reconsider whether the recovery leaf should use the same key that rotation
+  3. A withdrawal finalized before the pause can be broadcast by anyone, with no Byzantine member needed.
 - **Status:** model-confirmed consequence of review finding R2.
 - **Threat model:**
   - **One Byzantine committee member** of the current or pending committee,
@@ -739,7 +739,7 @@ exclude key material older than the erasure window?
 
 - 🧑 **Human Take:** As far as I can understand this, it is saying that a reduction to rate limits,
   something that might plausibly be done during an incident, can cause a complete halt if there happen to
-  be any already-signed withdrawals that would exceed the new rate limit. This seems sort of low
+  be any committed withdrawals not yet signed by the Guardian that would exceed the new max bucket capacity. This seems sort of low
   risk, but with potentially serious consequences
 - **Status:** reproduced in Rust tests. Severity: liveness of all
   withdrawals. Recovery requires another rotation by the operator and a
@@ -1022,7 +1022,7 @@ exclude key material older than the erasure window?
 ### F15. A withdrawal signed at a fee the market later leaves behind waits, but anyone can bump it
 
 - 🧑 **Human Take:** Probably deserves monitoring. Any withdrawal with too low a fee can be bumped manually by anyone with BTC to spend on it,
-  but if no one does so promptly the withdrawer can suffer losses.
+  but if no one does so promptly the withdrawer can suffer losses (price movement while waiting, or the fee to bump it themselves).
 - **Status:** analysed by code reading; **no action required.** Recorded so
   that later reviews do not rediscover it without this context. Not
   modelled: a TLA model would only restate "a transaction with too low a
