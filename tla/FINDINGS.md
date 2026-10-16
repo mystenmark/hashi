@@ -13,6 +13,7 @@ checked), **review-confirmed** (reviewers traced it in code; no model yet),
 
 ### F1. One Byzantine member can block every DKG and key rotation
 
+- 🧑 **Human Take:** known issue
 - **Status:** reproduced in a Rust test (DKG). Severity: liveness of the
   whole bridge until operators act.
 - **Threat model:**
@@ -130,6 +131,7 @@ checked), **review-confirmed** (reviewers traced it in code; no model yet),
 
 ### F2. A withdrawal can be signed twice by the Guardian, debiting the limiter twice
 
+- 🧑 **Human Take:** I don't know enough context to have an informed opinion about the severity of this
 - **Status:** reproduced in Rust tests. Severity: limiter accounting and
   liveness. No extra BTC moves, because both signatures cover the same
   transaction.
@@ -247,6 +249,12 @@ checked), **review-confirmed** (reviewers traced it in code; no model yet),
 
 ### F4. Nonce reuse if batch derivation changes within an epoch
 
+- 🧑 **Human Take:** To me this looks like something that could occur inadvertently during a release.
+  Because the batch size is just a rust constant, any change to it will apply immediately after a release, and not wait for reconfig.
+  If this happens due a mistake in the release process, it would be catastrophic, as the release would go to all nodes, likely resulting
+  in all keys being leaked.
+    - Recommendation: this type of constant belongs in a per-epoch config stored on Sui which can only change at reconfig time.
+      I don't think "we will just remember not to change it" is defensible given the consequences.
 - **Status:** model-confirmed for the abstract mechanism; downgraded to a
   hardening suggestion after code review. Severity if triggered: key-share
   leak for one node.
@@ -294,9 +302,10 @@ checked), **review-confirmed** (reviewers traced it in code; no model yet),
   epoch, and refuse to install a different one after a restart in the same
   epoch. This turns a silent leak into a loud failure if a future release
   gets the gating wrong.
-
+ 
 ### F5. Nonce safety holds under the stated assumptions
 
+- 🧑 **Human Take:** Ignore this, leaving here for claude's own history/context
 - **Status:** closed for the model's scope.
 - **Model:** [`Presig.cfg`](Presig.cfg) passes `NonceSafety`, `UniquePendingIndex`,
   `PendingBelowAlloc`, `TagNotAhead`, `ViewNotAhead`.
@@ -312,6 +321,7 @@ described there.
 
 ### F7. The Guardian's protection of a pool UTXO lapses after 60 days
 
+- 🧑 **Human Take:** This is as designed. There is planned monitoring to ensure that UTXOs don't timeout due to neglect.
 - **Status:** review-confirmed design analysis; the aftermath is
   model-confirmed. Severity: a compromised or colluding committee (current,
   or past with retained key material) can spend idle pool funds without the
@@ -510,6 +520,10 @@ exclude key material older than the erasure window?
 
 ### F8. Pause does not stop Bitcoin outflow of a committed withdrawal
 
+- 🧑 **Human Take:** I don't have enough context to judge. I can see two interpretations here:
+  1. Pausing is already a race - anything that can is caught in a grey area like this could also go out a little sooner and win the race outright.
+  2. As the AI suggests, if the pause is *because* of a committed withdrawal that looks bad, the pause won't help stop it.
+- Reconsider whether the recovery leaf should use the same key that rotation
 - **Status:** model-confirmed consequence of review finding R2.
 - **Threat model:**
   - **One Byzantine committee member** of the current or pending committee,
@@ -549,6 +563,7 @@ exclude key material older than the erasure window?
 
 ### F9. The Guardian can stay on an old committee for a whole Hashi epoch
 
+- 🧑 **Human Take:** Seems like a potentially very serious liveness issue.
 - **Status:** reproduced in Rust tests (review finding R8). Severity:
   liveness of withdrawal signing.
 - **Threat model:**
@@ -718,6 +733,10 @@ exclude key material older than the erasure window?
 
 ### F12. Lowering the Guardian's max capacity can halt all withdrawals
 
+- 🧑 **Human Take:** As far as I can understand this, it is saying that a reduction to rate limits,
+  something that might plausibly be done during an incident, can cause a complete halt if there happen to
+  be any already-signed withdrawals that would exceed the new rate limit. This seems sort of low
+  risk, but with potentially serious consequences
 - **Status:** reproduced in Rust tests. Severity: liveness of all
   withdrawals. Recovery requires another rotation by the operator and a
   threshold of key provisioners. The sample config already warns about
@@ -823,6 +842,7 @@ exclude key material older than the erasure window?
 
 ### F13. The Guardian's single-writer fence rests on a host that does not delay writes
 
+- 🧑 **Human Take:** I haven't had time to dig into this much, but I think the threat model is not very concerning.
 - **Status:** model-confirmed as a boundary; the host capability needs
   confirmation. Severity: limiter bound (safety 18, 19) under a malicious
   host; at most one record per session handover.
@@ -997,6 +1017,8 @@ exclude key material older than the erasure window?
 
 ### F15. A withdrawal signed at a fee the market later leaves behind waits, but anyone can bump it
 
+- 🧑 **Human Take:** Probably deserves monitoring. Any withdrawal with too low a fee can be bumped manually by anyone with BTC to spend on it,
+  but if no one does so promptly the withdrawer can suffer losses.
 - **Status:** analysed by code reading; **no action required.** Recorded so
   that later reviews do not rediscover it without this context. Not
   modelled: a TLA model would only restate "a transaction with too low a
